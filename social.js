@@ -297,6 +297,7 @@ let matchCurrentIdx = 0;
 let matchScore = 0;
 let matchTimer = null;
 let matchTimeLeft = 0;
+let matchQuizFormat = 'desc';
 
 function initOnlineMatchPage() {
   const container = document.getElementById('onlineMatchScopeSelectors');
@@ -362,21 +363,23 @@ function startOnlineMatching() {
   if (!currentUser) return alert("オンライン対戦にはログインが必要です。");
   const qCount = parseInt(document.getElementById('onlineMatchQuestionCount').value) || 10;
   const timeLimit = parseInt(document.getElementById('onlineMatchTimeLimit').value) || 15;
+  const quizFormat = document.getElementById('onlineMatchFormat').value || 'desc';
   const scope = selectedScopePath.length > 0 && selectedScopePath[0] !== "all" ? selectedScopePath[selectedScopePath.length - 1] : "all";
   
-  startOnlineMatch(scope, qCount, timeLimit, false);
+  startOnlineMatch(scope, qCount, timeLimit, false, quizFormat);
 }
 
 function createQuickMatch() {
   if (!currentUser) return alert("招待リンク作成にはログインが必要です。");
   const qCount = parseInt(document.getElementById('onlineMatchQuestionCount').value) || 10;
   const timeLimit = parseInt(document.getElementById('onlineMatchTimeLimit').value) || 15;
+  const quizFormat = document.getElementById('onlineMatchFormat').value || 'desc';
   const scope = selectedScopePath.length > 0 && selectedScopePath[0] !== "all" ? selectedScopePath[selectedScopePath.length - 1] : "all";
   
-  startOnlineMatch(scope, qCount, timeLimit, true);
+  startOnlineMatch(scope, qCount, timeLimit, true, quizFormat);
 }
 
-async function startOnlineMatch(scope, qCount, timeLimit, isPrivate) {
+async function startOnlineMatch(scope, qCount, timeLimit, isPrivate, quizFormat = 'desc') {
   showOnlineMatchOverlay("🔍 対戦相手を探しています...");
   
   try {
@@ -386,6 +389,7 @@ async function startOnlineMatch(scope, qCount, timeLimit, isPrivate) {
         .where('scope', '==', scope)
         .where('qCount', '==', qCount)
         .where('isPrivate', '==', false)
+        .where('quizFormat', '==', quizFormat)
         .limit(1).get();
         
       if (!snap.empty) {
@@ -431,6 +435,7 @@ async function startOnlineMatch(scope, qCount, timeLimit, isPrivate) {
       qCount: qCount,
       timeLimit: timeLimit,
       isPrivate: isPrivate,
+      quizFormat: quizFormat,
       createdAt: firebase.firestore.FieldValue.serverTimestamp(),
       questions: selectedQuestions,
       player1Score: null,
@@ -485,6 +490,7 @@ function listenToMatch() {
           matchQuestions = data.questions || [];
           matchCurrentIdx = 0;
           matchScore = 0;
+          matchQuizFormat = data.quizFormat || 'desc';
           startOnlineGameUI(data);
         }
         
@@ -527,16 +533,10 @@ function renderOnlineQuestion(timeLimit) {
   }
   
   const q = matchQuestions[matchCurrentIdx];
-  let choices = [q.answer];
-  let dummys = [...new Set(db.filter(item => item.answer !== q.answer).map(item => item.answer))];
-  dummys.sort(() => Math.random() - 0.5);
-  for (let i = 0; i < 3; i++) {
-    if (dummys[i]) choices.push(dummys[i]);
-    else choices.push(`ダミー候補 ${i+1}`);
-  }
-  choices.sort(() => Math.random() - 0.5);
+  const fmt = matchQuizFormat || 'desc';
   
-  gameView.innerHTML = `
+  // 共通ヘッダHTML
+  const headerHtml = `
     <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.8rem; color:var(--text2); margin-bottom:12px;">
       <span>⚔️ オンライン対戦中</span>
       <span>🎯 問題: ${matchCurrentIdx + 1} / ${matchQuestions.length}</span>
@@ -544,20 +544,60 @@ function renderOnlineQuestion(timeLimit) {
     <div style="background:var(--bg3); border:1px solid var(--border); border-radius:8px; height:6px; width:100%; margin-bottom:20px; overflow:hidden;">
       <div id="onlineTimerBar" style="background:var(--accent); height:100%; width:100%; transition: width 1s linear;"></div>
     </div>
-    
     <div style="flex:1; display:flex; flex-direction:column; justify-content:center; align-items:center; background:var(--bg2); border:1px solid var(--border); border-radius:12px; padding:24px; min-height:140px; margin-bottom:20px; text-align:center;">
       <div style="font-size:1.15rem; font-weight:bold; word-break:break-all; white-space:pre-wrap;">${escapeHtml(q.question)}</div>
     </div>
-    
-    <div style="display:grid; grid-template-columns:1fr; gap:10px; margin-bottom:20px;">
-      ${choices.map(c => `
-        <button class="btn btn-secondary" style="justify-content:center; padding:12px; font-size:0.9rem; text-align:center; word-break:break-all;" onclick="submitOnlineAnswer('${escapeHtml(c.replace(/'/g, "\\'"))}', '${escapeHtml(q.answer.replace(/'/g, "\\'"))}')">
-          ${escapeHtml(c)}
-        </button>
-      `).join('')}
-    </div>
   `;
   
+  if (fmt === 'desc') {
+    // 記述式
+    gameView.innerHTML = headerHtml + `
+      <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:20px;">
+        <input type="text" id="onlineDescInput" class="form-control" placeholder="答えを入力..." style="font-size:1rem;" autocomplete="off">
+        <button class="btn btn-accent" style="width:100%;" onclick="submitOnlineDescAnswer()">✅ 送信</button>
+      </div>
+    `;
+    const inp = document.getElementById('onlineDescInput');
+    if (inp) {
+      inp.focus();
+      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') submitOnlineDescAnswer(); });
+    }
+    
+  } else if (fmt === 'minhaya') {
+    // みんはや形式
+    gameView.innerHTML = headerHtml + `<div id="onlineMinhayaArea"></div>`;
+    renderOnlineMinhaya(q, timeLimit);
+    return; // タイマーはrenderOnlineMinhaya内で管理しない（下で共通タイマーを使う）
+    
+  } else if (fmt === 'tap') {
+    // タップ形式
+    gameView.innerHTML = headerHtml + `
+      <div style="margin-bottom:20px;">
+        <div id="onlineTapInput" style="min-height:40px; background:var(--bg3); border:1px solid var(--border); border-radius:8px; padding:8px; text-align:center; font-size:1.1rem; font-weight:bold; margin-bottom:10px; letter-spacing:2px;"></div>
+        <div id="onlineTapChoices" style="display:flex; flex-wrap:wrap; gap:8px; justify-content:center;"></div>
+        <button class="btn btn-secondary" style="width:100%; margin-top:10px;" onclick="submitOnlineTapAnswer()">✅ 送信</button>
+      </div>
+    `;
+    renderOnlineTap(q);
+    
+  } else if (fmt === 'self') {
+    // 自己申告形式
+    gameView.innerHTML = headerHtml + `
+      <div style="display:flex; flex-direction:column; gap:10px; margin-bottom:20px; align-items:center;">
+        <div id="onlineSelfAnswerDisplay" style="display:none; background:var(--bg3); border:1px solid var(--border); border-radius:8px; padding:12px; width:100%; text-align:center; font-size:1rem; font-weight:bold; color:var(--success);"></div>
+        <button class="btn btn-secondary" style="width:100%;" id="onlineSelfShowBtn" onclick="showOnlineSelfAnswer()">💡 答えを見る</button>
+        <div id="onlineSelfJudge" style="display:none; width:100%; flex-direction:column; gap:8px;">
+          <div style="text-align:center; font-size:0.85rem; color:var(--text2);">自己採点：</div>
+          <div style="display:flex; gap:8px;">
+            <button class="btn" style="flex:1; background:var(--success); color:#fff;" onclick="submitOnlineSelfAnswer(true)">⭕ 正解</button>
+            <button class="btn" style="flex:1; background:var(--danger); color:#fff;" onclick="submitOnlineSelfAnswer(false)">❌ 不正解</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  
+  // 共通タイマー
   clearInterval(matchTimer);
   matchTimeLeft = timeLimit;
   const bar = document.getElementById('onlineTimerBar');
@@ -571,6 +611,180 @@ function renderOnlineQuestion(timeLimit) {
       renderOnlineQuestion(timeLimit);
     }
   }, 1000);
+}
+
+// --- 記述式送信 ---
+window.submitOnlineDescAnswer = function() {
+  const inp = document.getElementById('onlineDescInput');
+  if (!inp) return;
+  const val = inp.value.trim();
+  clearInterval(matchTimer);
+  const q = matchQuestions[matchCurrentIdx];
+  if (typeof isAnswerCorrect === 'function' && isAnswerCorrect(val, q.answer)) matchScore++;
+  else {
+    // フォールバック: 正規化比較
+    const normalize = s => s.toLowerCase().replace(/[\s　]/g, '');
+    if (normalize(val) === normalize(q.answer.split(/[/|]/)[0])) matchScore++;
+  }
+  matchCurrentIdx++;
+  const timeLimit = parseInt(document.getElementById('onlineMatchTimeLimit').value) || 15;
+  renderOnlineQuestion(timeLimit);
+}
+
+// --- みんはや形式 ---
+let onlineMinhayaTarget = '';
+let onlineMinhayaPos = 0;
+
+function renderOnlineMinhaya(q, timeLimit) {
+  onlineMinhayaTarget = (typeof getPrimaryAnswer === 'function') ? getPrimaryAnswer(q.answer) : q.answer.split(/[/|]/)[0].trim();
+  onlineMinhayaPos = 0;
+  renderOnlineMinhayaDisplay(q, timeLimit);
+}
+
+function renderOnlineMinhayaDisplay(q, timeLimit) {
+  const area = document.getElementById('onlineMinhayaArea');
+  if (!area) return;
+  
+  const target = onlineMinhayaTarget;
+  const pos = onlineMinhayaPos;
+  
+  // スロット表示
+  let slotsHtml = '<div style="display:flex; flex-wrap:wrap; gap:4px; justify-content:center; margin-bottom:12px;">';
+  for (let i = 0; i < target.length; i++) {
+    const filled = i < pos;
+    const current = i === pos;
+    const bg = filled ? 'var(--success)' : (current ? 'var(--accent)' : 'var(--bg3)');
+    const txt = filled ? escapeHtml(target[i]) : (current ? '?' : '＿');
+    slotsHtml += `<div style="width:36px; height:36px; display:flex; align-items:center; justify-content:center; background:${bg}; border:1px solid var(--border); border-radius:6px; font-weight:bold; font-size:1.1rem;">${txt}</div>`;
+  }
+  slotsHtml += '</div>';
+  
+  if (pos >= target.length) {
+    // 完了
+    area.innerHTML = slotsHtml + `<div style="text-align:center; color:var(--success); font-weight:bold;">✅ 正解！</div>`;
+    return;
+  }
+  
+  const correctChar = target[pos];
+  // 4択文字ボタン生成
+  const allChars = [...new Set(
+    db.map(item => ((typeof getPrimaryAnswer === 'function') ? getPrimaryAnswer(item.answer) : item.answer.split(/[/|]/)[0].trim())).join('').split('')
+  )].filter(c => c && c !== correctChar && !/[\s　]/.test(c));
+  allChars.sort(() => Math.random() - 0.5);
+  const charChoices = [correctChar];
+  for (let i = 0; i < 3; i++) {
+    charChoices.push(allChars[i] || `？${i}`);
+  }
+  charChoices.sort(() => Math.random() - 0.5);
+  
+  let btnsHtml = '<div style="display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:10px;">';
+  charChoices.forEach(ch => {
+    btnsHtml += `<button class="btn btn-secondary" style="font-size:1.3rem; font-weight:bold; justify-content:center;" onclick="submitOnlineMinhayaChar(${JSON.stringify(ch)}, ${JSON.stringify(correctChar)}, ${timeLimit})">${escapeHtml(ch)}</button>`;
+  });
+  btnsHtml += '</div>';
+  
+  area.innerHTML = slotsHtml + btnsHtml;
+}
+
+window.submitOnlineMinhayaChar = function(chosen, correct, timeLimit) {
+  if (chosen === correct) {
+    onlineMinhayaPos++;
+    if (onlineMinhayaPos >= onlineMinhayaTarget.length) {
+      // 全文字正解
+      clearInterval(matchTimer);
+      matchScore++;
+      matchCurrentIdx++;
+      renderOnlineQuestion(timeLimit);
+    } else {
+      const q = matchQuestions[matchCurrentIdx];
+      renderOnlineMinhayaDisplay(q, timeLimit);
+    }
+  } else {
+    // 不正解: そのまま次の問題へ
+    clearInterval(matchTimer);
+    matchCurrentIdx++;
+    renderOnlineQuestion(timeLimit);
+  }
+}
+
+// --- タップ形式 ---
+let onlineTapTarget = [];
+let onlineTapInput = [];
+
+function renderOnlineTap(q) {
+  const primary = (typeof getPrimaryAnswer === 'function') ? getPrimaryAnswer(q.answer) : q.answer.split(/[/|]/)[0].trim();
+  onlineTapTarget = primary.split('');
+  onlineTapInput = [];
+  
+  const choicesEl = document.getElementById('onlineTapChoices');
+  if (!choicesEl) return;
+  
+  // 候補文字: 正解文字 + ダミー
+  const targetSet = [...new Set(onlineTapTarget)];
+  const allChars = [...new Set(
+    db.map(item => ((typeof getPrimaryAnswer === 'function') ? getPrimaryAnswer(item.answer) : item.answer.split(/[/|]/)[0].trim())).join('').split('')
+  )].filter(c => c && !targetSet.includes(c) && !/[\s　]/.test(c));
+  allChars.sort(() => Math.random() - 0.5);
+  
+  const pool = [...onlineTapTarget];
+  const extra = Math.min(4, allChars.length);
+  for (let i = 0; i < extra; i++) pool.push(allChars[i]);
+  pool.sort(() => Math.random() - 0.5);
+  
+  choicesEl.innerHTML = '';
+  pool.forEach((ch, idx) => {
+    const btn = document.createElement('button');
+    btn.className = 'btn btn-secondary';
+    btn.style.cssText = 'width:48px; height:48px; padding:0; font-size:1.3rem; justify-content:center;';
+    btn.id = 'onlineTapBtn_' + idx;
+    btn.innerText = ch;
+    btn.onclick = () => onlineTapChar(ch, idx);
+    choicesEl.appendChild(btn);
+  });
+  
+  updateOnlineTapInput();
+}
+
+function onlineTapChar(ch, btnIdx) {
+  onlineTapInput.push(ch);
+  const btn = document.getElementById('onlineTapBtn_' + btnIdx);
+  if (btn) btn.disabled = true;
+  updateOnlineTapInput();
+}
+
+function updateOnlineTapInput() {
+  const el = document.getElementById('onlineTapInput');
+  if (el) el.innerText = onlineTapInput.join('');
+}
+
+window.submitOnlineTapAnswer = function() {
+  clearInterval(matchTimer);
+  const inputStr = onlineTapInput.join('');
+  const q = matchQuestions[matchCurrentIdx];
+  const primary = (typeof getPrimaryAnswer === 'function') ? getPrimaryAnswer(q.answer) : q.answer.split(/[/|]/)[0].trim();
+  if (inputStr === primary) matchScore++;
+  matchCurrentIdx++;
+  const timeLimit = parseInt(document.getElementById('onlineMatchTimeLimit').value) || 15;
+  renderOnlineQuestion(timeLimit);
+}
+
+// --- 自己申告形式 ---
+window.showOnlineSelfAnswer = function() {
+  const q = matchQuestions[matchCurrentIdx];
+  const ansEl = document.getElementById('onlineSelfAnswerDisplay');
+  const judgeEl = document.getElementById('onlineSelfJudge');
+  const showBtn = document.getElementById('onlineSelfShowBtn');
+  if (ansEl) { ansEl.style.display = 'block'; ansEl.innerText = 'A: ' + ((typeof getPrimaryAnswer === 'function') ? getPrimaryAnswer(q.answer) : q.answer.split(/[/|]/)[0].trim()); }
+  if (judgeEl) { judgeEl.style.display = 'flex'; }
+  if (showBtn) showBtn.style.display = 'none';
+}
+
+window.submitOnlineSelfAnswer = function(isCorrect) {
+  clearInterval(matchTimer);
+  if (isCorrect) matchScore++;
+  matchCurrentIdx++;
+  const timeLimit = parseInt(document.getElementById('onlineMatchTimeLimit').value) || 15;
+  renderOnlineQuestion(timeLimit);
 }
 
 window.submitOnlineAnswer = function(chosen, correct) {

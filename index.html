@@ -571,6 +571,15 @@ body.light-mode .sync-status { background: rgba(255,255,255,0.9); }
     </div>
 
     <h3 style="margin:20px 0 10px 0; color:var(--text);">⚙️ 対戦設定</h3>
+    <div class="form-group" style="margin-bottom:10px;">
+      <label style="font-size:0.8rem; color:var(--text2);">形式</label>
+      <select id="onlineMatchFormat" class="form-control">
+        <option value="desc">📝 記述式入力モード</option>
+        <option value="minhaya">⚡ みんはや形式 (1文字ずつ4択)</option>
+        <option value="tap">👆 文字タップモード (Duolingo風)</option>
+        <option value="self">🧠 自己申告モード (Anki風)</option>
+      </select>
+    </div>
     <div class="form-group" style="display:flex; gap:10px; flex-wrap:wrap;">
       <div style="flex:1; min-width:150px;">
         <label style="font-size:0.8rem; color:var(--text2);">問題数</label>
