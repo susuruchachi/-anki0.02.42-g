@@ -309,6 +309,7 @@ function initOnlineMatchPage() {
   }
   const gameView = document.getElementById('onlineGameView');
   if (gameView) gameView.style.display = 'none';
+  updateOnlineWaitingCount();
 }
 
 function createOnlineMatchScopeSelect(depth, categoriesToShow) {
@@ -347,6 +348,7 @@ function createOnlineMatchScopeSelect(depth, categoriesToShow) {
     
     if (val === "all") {
       selectedScopePath = ["all"];
+      updateOnlineWaitingCount();
       return;
     }
     
@@ -356,9 +358,28 @@ function createOnlineMatchScopeSelect(depth, categoriesToShow) {
     if (children.length > 0) {
       createOnlineMatchScopeSelect(depth + 1, children);
     }
+    updateOnlineWaitingCount();
   };
   
   container.appendChild(select);
+}
+
+async function updateOnlineWaitingCount() {
+  const el = document.getElementById('onlineWaitingCountBadge');
+  if (!el) return;
+  const scope = selectedScopePath.length > 0 && selectedScopePath[0] !== 'all' ? selectedScopePath[selectedScopePath.length - 1] : 'all';
+  try {
+    const snap = await firestore.collection('susuru_anki_matches')
+      .where('status', '==', 'waiting')
+      .where('isPrivate', '==', false)
+      .where('scope', '==', scope)
+      .get();
+    const count = snap.size;
+    el.textContent = count > 0 ? `🟢 このカテゴリーで ${count}人 が待機中` : '⚪ 現在このカテゴリーで待機中の人はいません';
+    el.style.color = count > 0 ? 'var(--success)' : 'var(--text3)';
+  } catch(e) {
+    el.textContent = '';
+  }
 }
 
 function startOnlineMatching() {
