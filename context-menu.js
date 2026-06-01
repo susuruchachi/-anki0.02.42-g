@@ -69,11 +69,12 @@ function handleCategoryLongpress(catName) {
   let isSubscribedOther = false; // 他人が作った購読カテゴリー
   const sharedCard = db.find(q => q.category === catName && q.sharedDocId);
   if (sharedCard) {
-    const perm = sharedDocPermissions[sharedCard.sharedDocId];
+    const docId = sharedCard.sharedDocId;
+    const perm = sharedDocPermissions[docId];
     if (!perm || !perm.canEdit) isSharedReadOnly = true;
-    if (perm && !perm.isOwner) isSubscribedOther = true; // オーナーでない＝購読者
-    // 権限情報がない場合もsubscribedDocsに入っていれば購読者扱い
-    if (!perm && subscribedDocs.includes(sharedCard.sharedDocId)) isSubscribedOther = true;
+    // ownedDocs（確実なローカル記録）を最優先で参照し、なければpermのisOwnerで判断
+    const isDocOwner = ownedDocs.includes(docId) || (perm && perm.isOwner);
+    if (!isDocOwner && subscribedDocs.includes(docId)) isSubscribedOther = true;
   }
 
   const subCats = getAllSubcategories(catName);

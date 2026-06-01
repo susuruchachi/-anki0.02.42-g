@@ -11,6 +11,7 @@ function loadData() {
       if(p.categories) categories=p.categories; 
       if(p.categoryTree) categoryTree=p.categoryTree; 
       if(p.subscribedDocs) subscribedDocs=p.subscribedDocs; 
+      if(p.ownedDocs) ownedDocs=p.ownedDocs; 
       if(p.deletedCards) deletedCards=p.deletedCards;
       if(p.deletedCats) deletedCats=p.deletedCats;
     } 
@@ -20,7 +21,7 @@ function loadData() {
 
 function saveData(immediate = false) {
   ensureSystemSanity();
-  const payload = { db, categories, categoryTree, subscribedDocs, deletedCards, deletedCats };
+  const payload = { db, categories, categoryTree, subscribedDocs, ownedDocs, deletedCards, deletedCats };
   localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   if (currentUser) {
     clearTimeout(syncTimeout);
@@ -46,7 +47,7 @@ async function backgroundCloudSave(payload) {
     await firestore.collection("susuru_anki_users").doc(currentUser.uid).set({
       version: typeof APP_VERSION !== 'undefined' ? APP_VERSION : "unknown", 
       db: payload.db, categories: payload.categories,
-      categoryTree: payload.categoryTree, subscribedDocs: payload.subscribedDocs, 
+      categoryTree: payload.categoryTree, subscribedDocs: payload.subscribedDocs, ownedDocs: payload.ownedDocs,
       deletedCards: payload.deletedCards || [], deletedCats: payload.deletedCats || [],
       lastSync: firebase.firestore.FieldValue.serverTimestamp()
     });
@@ -107,6 +108,7 @@ async function syncToCloud(isSilent = false) {
     if (snap.exists) {
       let r = snap.data();
       if (r.subscribedDocs) subscribedDocs = r.subscribedDocs;
+      if (r.ownedDocs) ownedDocs = r.ownedDocs;
       
       if (r.deletedCards) { r.deletedCards.forEach(id => { if (!deletedCards.includes(id)) deletedCards.push(id); }); }
       if (r.deletedCats) { r.deletedCats.forEach(c => { if (!deletedCats.includes(c)) deletedCats.push(c); }); }

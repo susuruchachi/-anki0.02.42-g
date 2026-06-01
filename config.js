@@ -22,6 +22,7 @@ let shareStats = false; // 成績共有フラグ
 
 // ★ ライブ同期用変数
 let subscribedDocs = []; // 購読している共有ドキュメントIDの配列
+let ownedDocs = []; // 自分が作成した共有ドキュメントIDの配列
 let sharedDocPermissions = {}; // 各ドキュメントの編集権限キャッシュ { docId: { canEdit: boolean } }
 
 function getTodayStr() {

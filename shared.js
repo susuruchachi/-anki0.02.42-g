@@ -87,6 +87,7 @@ async function shareCategory(catName) {
     
     // 自分が作ったものも同期対象にする
     if (!subscribedDocs.includes(docRef.id)) subscribedDocs.push(docRef.id);
+    if (!ownedDocs.includes(docRef.id)) ownedDocs.push(docRef.id);
     db.forEach(q => { if (subset.find(s => s.id === q.id)) q.sharedDocId = docRef.id; });
     saveData(); syncSubscriptions();
     
@@ -255,6 +256,7 @@ async function makePublicCategory(catName) {
     });
     
     if (!subscribedDocs.includes(docRef.id)) subscribedDocs.push(docRef.id);
+    if (!ownedDocs.includes(docRef.id)) ownedDocs.push(docRef.id);
     db.forEach(q => { if (subset.find(s => s.id === q.id)) q.sharedDocId = docRef.id; });
     saveData(); syncSubscriptions();
     
