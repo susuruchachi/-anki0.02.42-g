@@ -17,7 +17,6 @@ function renderBox() {
     filtered = db.filter(q => subCats.includes(q.category));
     titleString = `🔖 ${currentCat}`;
     
-    // ★ 下位カテゴリー・上位階層への移動ボタンを生成
     let parentCat = null;
     if (typeof categoryTree !== 'undefined') {
       for (let p in categoryTree) { 
@@ -99,7 +98,6 @@ function renderBox() {
     const lvlStr = item.level === -1 ? 'しっかり' : 'LV '+item.level;
     const badgeHTML = `<span class="badge ${isGrad ? 'badge-grad':'badge-level'}">${isGrad ? 'GRADUATE' : lvlStr}</span>`;
     
-    // 共有カードアイコンの追加
     const sharedIcon = item.sharedDocId ? `<span style="margin-left:6px; font-size:0.75rem; color:var(--accent);">🌐同期</span>` : '';
     
     card.innerHTML = `
@@ -122,7 +120,6 @@ function toggleCardAnswer(el) {
 }
 
 function handleQuestionLongpress(item) {
-  // ★ 権限チェック (共同開発者以外はローカルでも一切の編集・削除・移動を禁止)
   if (item.sharedDocId) {
     const perm = sharedDocPermissions[item.sharedDocId];
     if (!perm || !perm.canEdit) {
@@ -136,7 +133,7 @@ function handleQuestionLongpress(item) {
     if (cat !== item.category) { moveOptions.push({ html: `📂 フォルダー「${cat}」へ移動`, action: async () => { 
       item.category = cat; 
       if (item.sharedDocId) await updateCardInSharedDoc(item.sharedDocId, item, 'edit');
-      saveData(); renderBox(); 
+      saveData(true); renderBox(); 
     } }); }
   });
   
@@ -151,22 +148,20 @@ function handleQuestionLongpress(item) {
     { type: 'separator' }, ...moveOptions, { type: 'separator' },
     { html: '🗑️ 削除', danger: true, action: async () => { 
         if(!confirm("完全に消去しますか？")) return; 
+        deletedCards.push(item.id);
         db = db.filter(q => q.id !== item.id); 
         if (item.sharedDocId) await updateCardInSharedDoc(item.sharedDocId, item, 'delete');
-        saveData(); renderBox(); 
+        saveData(true); renderBox(); 
       } }
   ]);
 }
 
 function showAddQModal() {
   let defaultCat = "未分類";
-  const specialViews = ['all', 'grad', 'master', 'normal', 'weak', 'shikkari', 'unseen'];
-  
   if (typeof currentViewContext === 'object' && currentViewContext.type === 'category') {
     defaultCat = currentViewContext.value;
   }
   
-  // ★ 追加先が共有カテゴリーの場合、権限をチェック
   let targetSharedDocId = null;
   const existingCard = db.find(q => q.category === defaultCat && q.sharedDocId);
   if (existingCard) {

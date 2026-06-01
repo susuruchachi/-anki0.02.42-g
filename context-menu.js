@@ -65,12 +65,15 @@ function closeContextMenu() { document.getElementById('ctxOverlay').style.displa
 function handleCategoryLongpress(catName) {
   if (catName === "未分類") return alert("基本フォルダーは変更できません。");
   
-  // ★ 閲覧専用かどうかのチェック
   let isSharedReadOnly = false;
+  let isSubscribedOther = false; // 他人が作った購読カテゴリー
   const sharedCard = db.find(q => q.category === catName && q.sharedDocId);
   if (sharedCard) {
     const perm = sharedDocPermissions[sharedCard.sharedDocId];
     if (!perm || !perm.canEdit) isSharedReadOnly = true;
+    if (perm && !perm.isOwner) isSubscribedOther = true; // オーナーでない＝購読者
+    // 権限情報がない場合もsubscribedDocsに入っていれば購読者扱い
+    if (!perm && subscribedDocs.includes(sharedCard.sharedDocId)) isSubscribedOther = true;
   }
 
   const subCats = getAllSubcategories(catName);
@@ -81,7 +84,7 @@ function handleCategoryLongpress(catName) {
       if (isSharedReadOnly) return alert("🔒 閲覧専用の共有カテゴリーは構造の移動ができません。");
       for(let g in categoryTree) { if(categoryTree[g]) categoryTree[g] = categoryTree[g].filter(c => c !== catName); }
       if(!categoryTree[p]) categoryTree[p] = []; categoryTree[p].push(catName);
-      saveData(); renderTree();
+      saveData(true); renderTree();
     }
   }));
 
@@ -94,7 +97,9 @@ function handleCategoryLongpress(catName) {
         const n = prompt(`「${catName}」の中に作成するフォルダー名:`);
         if(!n || n.trim() === "") return; if(categories.includes(n.trim())) return alert("既に存在します。");
         categories.push(n.trim()); if(!categoryTree[catName]) categoryTree[catName] = [];
-        categoryTree[catName].push(n.trim()); saveData(); renderTree();
+        categoryTree[catName].push(n.trim()); 
+        deletedCats = deletedCats.filter(c => c !== n.trim());
+        saveData(true); renderTree();
       } },
     { html: '📝 この直下に問題を追加', action: () => { currentViewContext = { type: 'category', value: catName }; showAddQModal(); } },
     { type: 'separator' },
@@ -106,17 +111,38 @@ function handleCategoryLongpress(catName) {
         for(let p in categoryTree) { categoryTree[p] = categoryTree[p].map(c => c === catName ? n.trim() : c); }
         if(categoryTree[catName]) { categoryTree[n.trim()] = categoryTree[catName]; delete categoryTree[catName]; }
         db.forEach(q => { if(q.category === catName) q.category = n.trim(); });
-        saveData(); renderTree();
+        deletedCats = deletedCats.filter(c => c !== n.trim());
+        saveData(true); renderTree();
       } },
     { html: '➕ 問題を一括追加 (Q,A 改行)', action: () => { showBulkAddModal(catName); } },
     { type: 'separator' }, ...moveOptions, { type: 'separator' },
-    { html: '❌ 削除 (中身も全て削除)', danger: true, action: () => {
-        if (isSharedReadOnly) return alert("🔒 閲覧専用の共有カテゴリーはローカルから直接削除できません。（※不要になった場合はアプリをリセットするか個別に消去してください）");
-        if(!confirm(`警告: 「${catName}」と中身を全て削除しますか？`)) return;
-        const toDelete = getAllSubcategories(catName);
-        db = db.filter(q => !toDelete.includes(q.category)); categories = categories.filter(c => !toDelete.includes(c));
-        for(let p in categoryTree) { if(toDelete.includes(p)) delete categoryTree[p]; else if(categoryTree[p]) categoryTree[p] = categoryTree[p].filter(c => !toDelete.includes(c)); }
-        saveData(); renderTree();
-      } }
+    { html: '🔄 成績をリセット (このフォルダーのみ)', action: () => {
+        if(!confirm(`⚠️ 「${catName}」とサブフォルダー内の全てのカードの成績（正解数・レベル等）をリセットしますか？\n（問題自体は消えません）`)) return;
+        const targetCats = getAllSubcategories(catName);
+        let resetCount = 0;
+        db.forEach(q => {
+          if(targetCats.includes(q.category)) {
+            q.level = 0; q.correct = 0; q.incorrect = 0; q.streak = 0; q.wrongStreak = 0; q.shikkariStreak = 0;
+            resetCount++;
+          }
+        });
+        saveData(true);
+        alert(`✅ ${resetCount}件の成績をリセットしました！`);
+        if (document.getElementById('pgStats') && document.getElementById('pgStats').classList.contains('active')) renderStatsAndCharts();
+      } },
+    ...(isSubscribedOther ? [
+      { html: '🚫 購読を解除', danger: true, action: () => { unsubscribeSharedCategory(catName); } }
+    ] : [
+      { html: '❌ 削除 (中身も全て削除)', danger: true, action: () => {
+          if (isSharedReadOnly) return alert("🔒 閲覧専用の共有カテゴリーはローカルから直接削除できません。（※不要になった場合はアプリをリセットするか個別に消去してください）");
+          if(!confirm(`警告: 「${catName}」と中身を全て削除しますか？`)) return;
+          const toDelete = getAllSubcategories(catName);
+          deletedCats.push(...toDelete);
+          db.forEach(q => { if(toDelete.includes(q.category)) deletedCards.push(q.id); });
+          db = db.filter(q => !toDelete.includes(q.category)); categories = categories.filter(c => !toDelete.includes(c));
+          for(let p in categoryTree) { if(toDelete.includes(p)) delete categoryTree[p]; else if(categoryTree[p]) categoryTree[p] = categoryTree[p].filter(c => !toDelete.includes(c)); }
+          saveData(true); renderTree();
+        } }
+    ])
   ]);
 }

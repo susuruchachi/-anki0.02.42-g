@@ -11,7 +11,6 @@ function getAllSubcategories(catName, result = new Set()) {
   return [...result];
 }
 
-// ★ メニュー用：上位カテゴリーから順にソートされたカテゴリーリストを取得
 function getSortedCategoriesForMenu() {
   const result = [];
   const visited = new Set();
@@ -79,5 +78,6 @@ function addNewRootCategory() {
   if(!txt) return;
   if(categories.includes(txt)) return alert("既に使用されているフォルダー名です。");
   categories.push(txt); document.getElementById('txtNewRoot').value = '';
-  saveData(); renderTree();
+  deletedCats = deletedCats.filter(c => c !== txt);
+  saveData(true); renderTree();
 }

@@ -44,32 +44,22 @@ function importCSV(e) {
   }; r.readAsText(e.target.files[0]);
 }
 
-// ★ 成績をリセット（カテゴリーと問題は保持、スコアのみリセット）
 window.resetScores = function resetScores() {
-  console.log("resetScores関数が呼ばれました");
-  console.log("現在のdb数:", db.length);
-  
-  if(!confirm("⚠️ すべてのカードの成績（正解数・誤答数・レベル）をリセットしますか？\n\nカテゴリーと問題文は保持されます。")) {
-    console.log("ユーザーがリセットをキャンセルしました");
-    return;
-  }
-  
+  if(!confirm("⚠️ すべてのカードの成績（正解数・誤答数・レベル）をリセットしますか？\n\nカテゴリーと問題文は保持されます。")) return;
   let resetCount = 0;
   db.forEach(q => {
-    q.level = 0;
-    q.correct = 0;
-    q.incorrect = 0;
-    q.streak = 0;
-    q.wrongStreak = 0;
-    q.shikkariStreak = 0;
+    q.level = 0; q.correct = 0; q.incorrect = 0; q.streak = 0; q.wrongStreak = 0; q.shikkariStreak = 0;
     resetCount++;
   });
-  
-  console.log(`${resetCount}件のカードをリセットしました`);
-  saveData();
+  saveData(true);
   alert("✅ 成績をリセットしました！");
   if (document.getElementById('pgStats') && document.getElementById('pgStats').classList.contains('active')) renderStatsAndCharts();
 };
 
-function factoryReset() { if(!confirm("⚠️ 全消去します。よろしいですか？")) return; localStorage.removeItem(STORAGE_KEY); db = []; categories = ["未分類"]; categoryTree = {}; saveData(); alert("💥 初期化完了。"); openPage('pgHome'); }
+function factoryReset() { 
+  if(!confirm("⚠️ 全消去します。よろしいですか？")) return; 
+  localStorage.removeItem(STORAGE_KEY); 
+  db = []; categories = ["未分類"]; categoryTree = {}; deletedCards = []; deletedCats = []; 
+  saveData(true); alert("💥 初期化完了。"); openPage('pgHome'); 
+}
 function escapeHtml(s) { if(!s) return ''; return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#039;"); }
