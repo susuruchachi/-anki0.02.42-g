@@ -75,7 +75,7 @@ function executePageTransition(pageId, isBackAction) {
   if(pageId==='pgBox') { const el = document.getElementById('navBox'); if(el) el.classList.add('active'); renderBox(); }
   if(pageId==='pgStats') { const el = document.getElementById('navStats'); if(el) el.classList.add('active'); renderStatsAndCharts(); }
   if(pageId==='pgOnlineMatch') { const el = document.getElementById('navOnlineMatch'); if(el) el.classList.add('active'); initOnlineMatchPage(); }
-  if(pageId==='pgPublicCategories') { loadPublicCategories(); }
+  if(pageId==='pgPublicCategories') { loadPublicCategories(); loadMyPublicCategories(); }
   if(pageId==='pgCompareStats') { loadFriendsForComparison(); }
   if(pageId==='pgBackup') { const el = document.getElementById('navBackup'); if(el) el.classList.add('active'); }
   if(pageId==='pgTutorial') { fetchAndRenderTutorial(); }

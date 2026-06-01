@@ -617,6 +617,12 @@ body.light-mode .sync-status { background: rgba(255,255,255,0.9); }
       <input type="text" id="searchPublicCategories" class="form-control" placeholder="カテゴリー検索..." oninput="filterPublicCategories()">
       <button class="btn btn-secondary" style="width:auto; padding:12px 20px;" onclick="openPage('pgBox')">戻る</button>
     </div>
+    <div id="myPublicCategoriesSection" style="display:none; margin-bottom:20px;">
+      <div class="card" style="border-color:var(--accent);">
+        <div class="setting-box-title" style="color:var(--accent);">📤 自分が公開中のカテゴリー</div>
+        <div id="myPublicCategoriesList"><div style="text-align:center; color:var(--text3); font-size:0.85rem;">読み込み中...</div></div>
+      </div>
+    </div>
     <div id="publicCategoriesList"></div>
   </div>
 
