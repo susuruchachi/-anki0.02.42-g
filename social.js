@@ -299,6 +299,7 @@ let matchTimer = null;
 let matchTimeLeft = 0;
 let matchQuizFormat = 'desc';
 let matchGameStarted = false;
+let matchTimeLimitVal = 15;
 
 function initOnlineMatchPage() {
   const container = document.getElementById('onlineMatchScopeSelectors');
@@ -442,7 +443,9 @@ async function startOnlineMatch(scope, qCount, timeLimit, isPrivate, quizFormat 
       player1Score: null,
       player2Score: null,
       player1Finished: false,
-      player2Finished: false
+      player2Finished: false,
+      player1Progress: 0,
+      player2Progress: 0
     };
     
     const ref = await firestore.collection('susuru_anki_matches').add(matchData);
@@ -475,6 +478,8 @@ window.copyInviteLink = function() {
   }
 }
 
+let matchOppProgressCallback = null; // 相手のProgress変化を受け取るコールバック
+
 function listenToMatch() {
   if (matchUnsubscribe) matchUnsubscribe();
   matchGameStarted = false;
@@ -487,6 +492,7 @@ function listenToMatch() {
       if (data.status === 'playing') {
         const isPlayer1 = data.player1 === currentUser.uid;
         const myFinished = isPlayer1 ? data.player1Finished : data.player2Finished;
+        const oppProgress = isPlayer1 ? (data.player2Progress || 0) : (data.player1Progress || 0);
         
         if (!matchGameStarted && !myFinished) {
           matchGameStarted = true;
@@ -495,6 +501,11 @@ function listenToMatch() {
           matchScore = 0;
           matchQuizFormat = data.quizFormat || 'choice';
           startOnlineGameUI(data);
+        }
+        
+        // 相手のProgress変化をコールバックへ通知
+        if (matchOppProgressCallback) {
+          matchOppProgressCallback(oppProgress, data);
         }
         
         if (data.player1Finished && data.player2Finished) {
@@ -525,7 +536,8 @@ function startOnlineGameUI(matchData) {
   }
   gameView.style.display = 'flex';
   
-  renderOnlineQuestion(matchData.timeLimit);
+  matchTimeLimitVal = matchData.timeLimit || 15;
+  renderOnlineQuestion(matchTimeLimitVal);
 }
 
 // --- 答えフィードバック共通関数 ---
@@ -542,6 +554,77 @@ function showOnlineFeedback(isCorrect, correctAnswer, timeLimit, onNext) {
     feedbackDiv.remove();
     onNext();
   }, 900);
+}
+
+// 回答後：Progressを書き込み、相手を待って次の問題へ
+async function advanceToNextQuestion() {
+  if (!currentMatchId) return;
+  const nextIdx = matchCurrentIdx; // すでにincrement済み
+  
+  // Firestoreに自分のProgressを書き込む
+  try {
+    const doc = await firestore.collection('susuru_anki_matches').doc(currentMatchId).get();
+    if (!doc.exists) return;
+    const d = doc.data();
+    const isPlayer1 = d.player1 === currentUser.uid;
+    const updateField = isPlayer1 ? 'player1Progress' : 'player2Progress';
+    await firestore.collection('susuru_anki_matches').doc(currentMatchId).update({ [updateField]: nextIdx });
+    
+    // 全問完了なら即finishOnlineGame
+    if (nextIdx >= matchQuestions.length) {
+      matchOppProgressCallback = null;
+      finishOnlineGame();
+      return;
+    }
+    
+    // 相手のProgressを確認
+    const oppProgress = isPlayer1 ? (d.player2Progress || 0) : (d.player1Progress || 0);
+    if (oppProgress >= nextIdx) {
+      // 相手もこの問題に到達済み → 即次へ
+      matchOppProgressCallback = null;
+      renderOnlineQuestion(matchTimeLimitVal);
+    } else {
+      // 相手を待つ → 待機画面を表示
+      showOnlineWaitingForOpp(nextIdx, isPlayer1 ? (d.player2Name || '相手') : (d.player1Name || '相手'));
+    }
+  } catch (e) {
+    console.error(e);
+    // エラー時は待機なしで次へ
+    matchOppProgressCallback = null;
+    renderOnlineQuestion(matchTimeLimitVal);
+  }
+}
+
+// 相手待機画面を表示
+function showOnlineWaitingForOpp(waitingForIdx, oppName) {
+  const gameView = document.getElementById('onlineGameView');
+  if (!gameView) return;
+  
+  const q = matchQuestions[waitingForIdx];
+  const qNum = waitingForIdx + 1;
+  
+  gameView.innerHTML = `
+    <div style="display:flex; justify-content:space-between; align-items:center; font-size:0.8rem; color:var(--text2); margin-bottom:12px;">
+      <span>⚔️ オンライン対戦中</span>
+      <span>🎯 問題: ${qNum} / ${matchQuestions.length}</span>
+    </div>
+    <div style="flex:1; display:flex; flex-direction:column; justify-content:center; align-items:center; text-align:center; padding:24px; gap:16px;">
+      <div style="font-size:2rem;">⏳</div>
+      <div style="font-size:1rem; font-weight:bold; color:var(--text);">次の問題を準備中...</div>
+      <div style="font-size:0.9rem; color:var(--text2);">🔄 ${escapeHtml(oppName)} が回答中です</div>
+      <div style="background:var(--bg3); border:1px solid var(--border); border-radius:8px; padding:12px; width:100%; font-size:0.85rem; color:var(--text2); text-align:center;">
+        両者が解答し終えたら次の問題へ進みます
+      </div>
+    </div>
+  `;
+  
+  // コールバックをセット：相手のProgressがwaitingForIdx以上になったら進む
+  matchOppProgressCallback = (oppProgress, data) => {
+    if (oppProgress >= waitingForIdx) {
+      matchOppProgressCallback = null;
+      renderOnlineQuestion(matchTimeLimitVal);
+    }
+  };
 }
 
 function renderOnlineQuestion(timeLimit) {
@@ -600,7 +683,6 @@ function renderOnlineQuestion(timeLimit) {
     // みんはや形式
     gameView.innerHTML = headerHtml + `<div id="onlineMinhayaArea"></div>`;
     renderOnlineMinhaya(q, timeLimit);
-    return; // みんはやは文字ごとに分岐するため共通タイマーのみ使用
     
   } else if (fmt === 'tap') {
     // タップ形式
@@ -630,20 +712,22 @@ function renderOnlineQuestion(timeLimit) {
     `;
   }
   
-  // 共通タイマー
+  // 共通タイマー（自己申告は時間制限なし）
   clearInterval(matchTimer);
-  matchTimeLeft = timeLimit;
-  const bar = document.getElementById('onlineTimerBar');
-  
-  matchTimer = setInterval(() => {
-    matchTimeLeft--;
-    if (bar) bar.style.width = `${(matchTimeLeft / timeLimit) * 100}%`;
-    if (matchTimeLeft <= 0) {
-      clearInterval(matchTimer);
-      matchCurrentIdx++;
-      renderOnlineQuestion(timeLimit);
-    }
-  }, 1000);
+  if (fmt !== 'self') {
+    matchTimeLeft = timeLimit;
+    const bar = document.getElementById('onlineTimerBar');
+    
+    matchTimer = setInterval(() => {
+      matchTimeLeft--;
+      if (bar) bar.style.width = `${(matchTimeLeft / timeLimit) * 100}%`;
+      if (matchTimeLeft <= 0) {
+        clearInterval(matchTimer);
+        matchCurrentIdx++;
+        advanceToNextQuestion();
+      }
+    }, 1000);
+  }
 }
 
 // --- 記述式送信 ---
@@ -660,7 +744,7 @@ window.submitOnlineDescAnswer = function() {
   if (isOk) matchScore++;
   matchCurrentIdx++;
   const timeLimit = parseInt(document.getElementById('onlineMatchTimeLimit').value) || 15;
-  showOnlineFeedback(isOk, correct, timeLimit, () => renderOnlineQuestion(timeLimit));
+  showOnlineFeedback(isOk, correct, timeLimit, () => advanceToNextQuestion());
 }
 
 // --- みんはや形式 ---
@@ -726,7 +810,7 @@ window.submitOnlineMinhayaChar = function(chosen, correct, timeLimit) {
       clearInterval(matchTimer);
       matchScore++;
       matchCurrentIdx++;
-      showOnlineFeedback(true, onlineMinhayaTarget, timeLimit, () => renderOnlineQuestion(timeLimit));
+      showOnlineFeedback(true, onlineMinhayaTarget, timeLimit, () => advanceToNextQuestion());
     } else {
       const q = matchQuestions[matchCurrentIdx];
       renderOnlineMinhayaDisplay(q, timeLimit);
@@ -735,7 +819,7 @@ window.submitOnlineMinhayaChar = function(chosen, correct, timeLimit) {
     // 不正解: フィードバック表示して次の問題へ
     clearInterval(matchTimer);
     matchCurrentIdx++;
-    showOnlineFeedback(false, onlineMinhayaTarget, timeLimit, () => renderOnlineQuestion(timeLimit));
+    showOnlineFeedback(false, onlineMinhayaTarget, timeLimit, () => advanceToNextQuestion());
   }
 }
 
@@ -798,7 +882,7 @@ window.submitOnlineTapAnswer = function() {
   if (isOk) matchScore++;
   matchCurrentIdx++;
   const timeLimit = parseInt(document.getElementById('onlineMatchTimeLimit').value) || 15;
-  showOnlineFeedback(isOk, primary, timeLimit, () => renderOnlineQuestion(timeLimit));
+  showOnlineFeedback(isOk, primary, timeLimit, () => advanceToNextQuestion());
 }
 
 // --- 自己申告形式 ---
@@ -816,8 +900,7 @@ window.submitOnlineSelfAnswer = function(isCorrect) {
   clearInterval(matchTimer);
   if (isCorrect) matchScore++;
   matchCurrentIdx++;
-  const timeLimit = parseInt(document.getElementById('onlineMatchTimeLimit').value) || 15;
-  renderOnlineQuestion(timeLimit);
+  advanceToNextQuestion();
 }
 
 window.submitOnlineAnswer = function(chosen, correct) {
@@ -826,7 +909,7 @@ window.submitOnlineAnswer = function(chosen, correct) {
   if (isOk) matchScore++;
   matchCurrentIdx++;
   const timeLimit = parseInt(document.getElementById('onlineMatchTimeLimit').value) || 15;
-  showOnlineFeedback(isOk, correct, timeLimit, () => renderOnlineQuestion(timeLimit));
+  showOnlineFeedback(isOk, correct, timeLimit, () => advanceToNextQuestion());
 }
 
 async function finishOnlineGame() {
@@ -926,6 +1009,7 @@ window.quitOnlineMatchUI = function() {
   if (ind) ind.remove();
   currentMatchId = null;
   matchGameStarted = false;
+  matchOppProgressCallback = null;
   initOnlineMatchPage();
 }
 
