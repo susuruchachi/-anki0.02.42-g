@@ -300,6 +300,9 @@ let matchTimeLeft = 0;
 let matchQuizFormat = 'desc';
 let matchGameStarted = false;
 let matchTimeLimitVal = 15;
+let matchIsPlayer1 = true;
+let matchOppName = '相手';
+let matchLastOppProgress = 0;
 
 function initOnlineMatchPage() {
   const container = document.getElementById('onlineMatchScopeSelectors');
@@ -371,13 +374,14 @@ async function updateOnlineWaitingCount() {
   try {
     const snap = await firestore.collection('susuru_anki_matches')
       .where('status', '==', 'waiting')
-      .where('isPrivate', '==', false)
       .where('scope', '==', scope)
       .get();
-    const count = snap.size;
+    // JS側でisPrivate==falseを絞り込み（複合インデックス不要）
+    const count = snap.docs.filter(d => d.data().isPrivate === false).length;
     el.textContent = count > 0 ? `🟢 このカテゴリーで ${count}人 が待機中` : '⚪ 現在このカテゴリーで待機中の人はいません';
     el.style.color = count > 0 ? 'var(--success)' : 'var(--text3)';
   } catch(e) {
+    console.warn('待機人数取得エラー:', e);
     el.textContent = '';
   }
 }
@@ -504,6 +508,7 @@ let matchOppProgressCallback = null; // 相手のProgress変化を受け取る�
 function listenToMatch() {
   if (matchUnsubscribe) matchUnsubscribe();
   matchGameStarted = false;
+  matchLastOppProgress = 0;
   
   matchUnsubscribe = firestore.collection('susuru_anki_matches').doc(currentMatchId)
     .onSnapshot((doc) => {
@@ -514,9 +519,12 @@ function listenToMatch() {
         const isPlayer1 = data.player1 === currentUser.uid;
         const myFinished = isPlayer1 ? data.player1Finished : data.player2Finished;
         const oppProgress = isPlayer1 ? (data.player2Progress || 0) : (data.player1Progress || 0);
+        matchLastOppProgress = oppProgress;
         
         if (!matchGameStarted && !myFinished) {
           matchGameStarted = true;
+          matchIsPlayer1 = isPlayer1;
+          matchOppName = isPlayer1 ? (data.player2Name || '相手') : (data.player1Name || '相手');
           matchQuestions = data.questions || [];
           matchCurrentIdx = 0;
           matchScore = 0;
@@ -579,41 +587,25 @@ function showOnlineFeedback(isCorrect, correctAnswer, timeLimit, onNext) {
 
 // 回答後：Progressを書き込み、相手を待って次の問題へ
 async function advanceToNextQuestion() {
-  if (!currentMatchId) return;
+  if (!currentMatchId) { renderOnlineQuestion(matchTimeLimitVal); return; }
   const nextIdx = matchCurrentIdx; // すでにincrement済み
   
-  // Firestoreに自分のProgressを書き込む
-  try {
-    const doc = await firestore.collection('susuru_anki_matches').doc(currentMatchId).get();
-    if (!doc.exists) return;
-    const d = doc.data();
-    const isPlayer1 = d.player1 === currentUser.uid;
-    const updateField = isPlayer1 ? 'player1Progress' : 'player2Progress';
-    await firestore.collection('susuru_anki_matches').doc(currentMatchId).update({ [updateField]: nextIdx });
-    
-    // 全問完了なら即finishOnlineGame
-    if (nextIdx >= matchQuestions.length) {
-      matchOppProgressCallback = null;
-      finishOnlineGame();
-      return;
-    }
-    
-    // 相手のProgressを確認
-    const oppProgress = isPlayer1 ? (d.player2Progress || 0) : (d.player1Progress || 0);
-    if (oppProgress >= nextIdx) {
-      // 相手もこの問題に到達済み → 即次へ
-      matchOppProgressCallback = null;
-      renderOnlineQuestion(matchTimeLimitVal);
-    } else {
-      // 相手を待つ → 待機画面を表示
-      showOnlineWaitingForOpp(nextIdx, isPlayer1 ? (d.player2Name || '相手') : (d.player1Name || '相手'));
-    }
-  } catch (e) {
-    console.error(e);
-    // エラー時は待機なしで次へ
+  // 全問完了なら即finishOnlineGame
+  if (nextIdx >= matchQuestions.length) {
     matchOppProgressCallback = null;
-    renderOnlineQuestion(matchTimeLimitVal);
+    finishOnlineGame();
+    return;
   }
+  
+  // Firestoreに自分のProgressを非同期で書き込む（await不要＝ブロックしない）
+  const updateField = matchIsPlayer1 ? 'player1Progress' : 'player2Progress';
+  firestore.collection('susuru_anki_matches').doc(currentMatchId)
+    .update({ [updateField]: nextIdx })
+    .catch(e => console.warn('Progress更新エラー:', e));
+  
+  // 相手のProgressはonSnapshotで管理されているコールバックで検出する
+  // ここでは即座に待機画面を表示し、コールバックで解除する
+  showOnlineWaitingForOpp(nextIdx, matchOppName);
 }
 
 // 相手待機画面を表示
@@ -640,7 +632,13 @@ function showOnlineWaitingForOpp(waitingForIdx, oppName) {
   `;
   
   // コールバックをセット：相手のProgressがwaitingForIdx以上になったら進む
-  matchOppProgressCallback = (oppProgress, data) => {
+  // セット前に既に追いついていれば即進む
+  if (matchLastOppProgress >= waitingForIdx) {
+    matchOppProgressCallback = null;
+    renderOnlineQuestion(matchTimeLimitVal);
+    return;
+  }
+  matchOppProgressCallback = (oppProgress) => {
     if (oppProgress >= waitingForIdx) {
       matchOppProgressCallback = null;
       renderOnlineQuestion(matchTimeLimitVal);
@@ -1031,6 +1029,7 @@ window.quitOnlineMatchUI = function() {
   currentMatchId = null;
   matchGameStarted = false;
   matchOppProgressCallback = null;
+  matchLastOppProgress = 0;
   initOnlineMatchPage();
 }
 

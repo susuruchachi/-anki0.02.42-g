@@ -250,7 +250,7 @@ async function makePublicCategory(catName) {
   
   try {
     const docRef = await firestore.collection("susuru_anki_shared").add({
-      catName: catName, cards: subset, categories: allTargets, categoryTree: partialTree, ownerId: currentUser.uid, ownerName: currentUser.displayName || currentUser.email || '不明', isPublic: true, friends: [], createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      catName: catName, cards: subset, categories: allTargets, categoryTree: partialTree, ownerId: currentUser.uid, ownerName: currentUser.displayName || currentUser.email || '不明', isPublic: true, friends: [], subscriberUids: [currentUser.uid], createdAt: firebase.firestore.FieldValue.serverTimestamp()
     });
     
     if (!subscribedDocs.includes(docRef.id)) subscribedDocs.push(docRef.id);
@@ -344,6 +344,12 @@ async function importPublicCategory(docId, catName) {
         await firestore.collection('susuru_anki_shared').doc(docId).update({
           subscriberUids: firebase.firestore.FieldValue.arrayUnion(currentUser.uid)
         });
+        // ローカルキャッシュも即時更新
+        const cached = publicCategoriesCache.find(c => c.id === docId);
+        if (cached) {
+          if (!cached.subscriberUids) cached.subscriberUids = [];
+          if (!cached.subscriberUids.includes(currentUser.uid)) cached.subscriberUids.push(currentUser.uid);
+        }
       } catch(e2) { /* 失敗しても購読自体は成功しているので無視 */ }
     }
   } catch(e) { alert('⚠️ 購読に失敗しました'); }
