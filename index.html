@@ -607,7 +607,18 @@ body.light-mode .sync-status { background: rgba(255,255,255,0.9); }
       <p id="onlineMatchInfoText"></p>
     </div>
 
-    <button class="btn btn-secondary" style="margin-top:20px; width:100%;" onclick="openPage('pgStats')">戻る</button>
+    <button class="btn btn-secondary" style="margin-top:12px; width:100%;" onclick="openPage('pgMatchHistory'); renderMatchHistory();">📋 対戦履歴を見る</button>
+    <button class="btn btn-secondary" style="margin-top:10px; width:100%;" onclick="openPage('pgStats')">戻る</button>
+  </div>
+
+  <div id="pgMatchHistory" class="screen">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+      <h2>📋 対戦履歴</h2>
+      <button class="btn btn-secondary" style="width:auto; padding:8px 14px;" onclick="openPage('pgOnlineMatch')">戻る</button>
+    </div>
+    <div id="matchHistoryArea">
+      <div style="text-align:center; color:var(--text3); padding:30px 0;">対戦履歴がありません</div>
+    </div>
   </div>
 
   <div id="pgPublicCategories" class="screen">
