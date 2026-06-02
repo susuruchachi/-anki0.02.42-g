@@ -1,7 +1,8 @@
-// ★★★ すするanki0.02.51-g - ソーシャル機能（ランキング・フレンド・チャット・成績比較・オンライン対戦） ★★★
+// ★★★ すするanki0.02.59-g - ソーシャル機能（ランキング・フレンド・チャット・成績比較・オンライン対戦） ★★★
 
 // ★ グローバル変数の安全な初期化
 window.shareStats = localStorage.getItem('shareStats') === 'true';
+let compareChartInstance = null; // 折れ線グラフ用インスタンス
 
 // ★ 本日のデイリーランキング表示
 async function loadDailyRanking() {
@@ -61,6 +62,10 @@ async function loadAppFriends() {
   try {
     const myProfileSnap = await firestore.collection('susuru_anki_profiles').doc(currentUser.uid).get();
     const friends = myProfileSnap.exists ? (myProfileSnap.data().friends || []) : [];
+    
+    // ★ 追加機能：フレンド一覧と同時に対戦履歴を描画
+    renderMatchHistory();
+
     if (friends.length === 0) { listDiv.innerHTML = '<p style="color:var(--text3); font-size:0.85rem; text-align:center;">フレンドはいません。</p>'; return; }
     listDiv.innerHTML = '';
     for (const fUid of friends) {
@@ -71,6 +76,47 @@ async function loadAppFriends() {
       listDiv.appendChild(div);
     }
   } catch (e) { listDiv.innerHTML = '<p style="color:var(--danger); font-size:0.8rem; text-align:center;">エラーが発生しました。</p>'; }
+}
+
+// ★ 新機能：対戦履歴を描画
+function renderMatchHistory() {
+  const list = document.getElementById('matchHistoryList');
+  if (!list) return;
+  const history = JSON.parse(localStorage.getItem('susuru_anki_match_history') || '[]');
+  if (history.length === 0) {
+    list.innerHTML = '<div style="font-size:0.8rem; color:var(--text3); text-align:center; padding:10px;">対戦履歴がありません</div>';
+    return;
+  }
+  list.innerHTML = '';
+  history.forEach(h => {
+    const d = new Date(h.date);
+    const dStr = `${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:var(--bg3); padding:10px 12px; border-radius:8px; border:1px solid var(--border); margin-bottom:8px;';
+    const resultStr = h.myScore > h.oppScore ? '🏆 勝利' : (h.myScore < h.oppScore ? '💀 敗北' : '△ 引分');
+    const resultColor = h.myScore > h.oppScore ? 'var(--success)' : (h.myScore < h.oppScore ? 'var(--danger)' : 'var(--warn)');
+
+    div.innerHTML = `
+      <div style="flex:1;">
+        <div style="font-weight:bold; color:var(--text); font-size:0.9rem;">👤 ${escapeHtml(h.oppName)}</div>
+        <div style="font-size:0.75rem; color:var(--text2); margin-top:4px;">${dStr} | <span style="color:${resultColor}; font-weight:bold;">${resultStr}</span> (${h.myScore} - ${h.oppScore})</div>
+      </div>
+      <button class="btn btn-secondary" style="width:auto; padding:6px 10px; font-size:0.75rem; white-space:nowrap;" onclick="addAppFriendByUid('${h.oppUid}')">🤝 申請</button>
+    `;
+    list.appendChild(div);
+  });
+}
+
+// ★ 新機能：UIDから直接フレンド追加
+window.addAppFriendByUid = async function(uid) {
+  if (!currentUser) return alert("ログインが必要です。");
+  if (uid === currentUser.uid) return alert("自分自身は登録できません。");
+  try {
+    await firestore.collection('susuru_anki_profiles').doc(currentUser.uid).set({ friends: firebase.firestore.FieldValue.arrayUnion(uid) }, { merge: true });
+    await firestore.collection('susuru_anki_profiles').doc(uid).set({ friends: firebase.firestore.FieldValue.arrayUnion(currentUser.uid) }, { merge: true });
+    alert("✅ フレンドを追加しました！");
+    loadAppFriends();
+  } catch (e) { alert("⚠️ フレンド追加に失敗しました。"); }
 }
 
 let currentChatUnsubscribe = null, currentChatFriendUid = null;
@@ -204,6 +250,7 @@ async function loadFriendsForComparison() {
   } catch(e) {}
 }
 
+// ★ 新機能：成績比較を過去7日間の折れ線グラフに書き換え
 async function renderCompareStats() {
   const friendUid = document.getElementById('selCompareFriend').value;
   const category = document.getElementById('selCompareCategory').value;
@@ -214,78 +261,76 @@ async function renderCompareStats() {
     return;
   }
   
-  area.innerHTML = '<div style="text-align:center; color:var(--text2);">読み込み中...</div>';
+  area.innerHTML = '<div style="text-align:center; color:var(--text2);">データ集計中...</div>';
   
   try {
-    const d = getTodayStr();
-    
-    const [mySnap, friendSnap] = await Promise.all([
-      firestore.collection('susuru_anki_category_scores').where('uid', '==', currentUser.uid).get(),
-      firestore.collection('susuru_anki_category_scores').where('uid', '==', friendUid).get()
-    ]);
-    
-    const data = {};
-    
-    const processDoc = (doc) => {
-      const dObj = doc.data();
-      if (dObj.date === d) {
-        if (category && dObj.category !== category) return;
-        const key = `${dObj.category}_${dObj.uid}`;
-        data[key] = dObj;
-      }
-    };
-    
-    mySnap.forEach(processDoc);
-    friendSnap.forEach(processDoc);
-    
-    area.innerHTML = '';
-    
-    if (Object.keys(data).length === 0) {
-      area.innerHTML = '<div style="text-align:center; color:var(--text3); padding:40px;">本日の成績データがありません</div>';
-      return;
+    // 過去7日間の日付配列を生成
+    const dates = [];
+    for(let i=6; i>=0; i--){
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+      dates.push(d.toISOString().split('T')[0]);
     }
     
-    const grouped = {};
-    Object.values(data).forEach(item => {
-      if (!grouped[item.category]) grouped[item.category] = [];
-      grouped[item.category].push(item);
+    const [mySnap, friendSnap] = await Promise.all([
+      firestore.collection('susuru_anki_category_scores').where('uid', '==', currentUser.uid).where('date', 'in', dates).get(),
+      firestore.collection('susuru_anki_category_scores').where('uid', '==', friendUid).where('date', 'in', dates).get()
+    ]);
+    
+    let myData = {}; let friendData = {}; let friendName = 'フレンド';
+    dates.forEach(d => { myData[d] = {score:0, total:0}; friendData[d] = {score:0, total:0}; });
+    
+    mySnap.forEach(doc => {
+      const d = doc.data();
+      if (!category || d.category === category) {
+        if(myData[d.date]) { myData[d.date].score += (d.score||0); myData[d.date].total += (d.total||0); }
+      }
     });
     
-    Object.entries(grouped).forEach(([catName, scores]) => {
-      const card = document.createElement('div');
-      card.className = 'card';
-      
-      const myScore = scores.find(s => s.uid === currentUser.uid);
-      const friendScore = scores.find(s => s.uid === friendUid);
-      
-      const myRate = myScore && myScore.total > 0 ? (myScore.score / myScore.total * 100).toFixed(1) : 0;
-      const friendRate = friendScore && friendScore.total > 0 ? (friendScore.score / friendScore.total * 100).toFixed(1) : 0;
-      const friendName = friendScore ? friendScore.name : '不明';
-      
-      card.innerHTML = `
-        <div style="font-weight:700; margin-bottom:15px; color:var(--text);">${escapeHtml(catName)}</div>
-        <div style="display:flex; gap:15px; margin-bottom:10px;">
-          <div style="flex:1;">
-            <div style="font-size:0.8rem; color:var(--text2); margin-bottom:4px;">あなた</div>
-            <div style="height:20px; background:var(--bg3); border-radius:4px; overflow:hidden; border:1px solid var(--border);">
-              <div style="width:${myRate}%; height:100%; background:var(--primary); transition:width 0.3s;"></div>
-            </div>
-            <div style="font-size:0.75rem; color:var(--text2); margin-top:4px;">${myScore ? myScore.score : 0}/${myScore ? myScore.total : 0} (${myRate}%)</div>
-          </div>
-          <div style="flex:1;">
-            <div style="font-size:0.8rem; color:var(--text2); margin-bottom:4px;">${escapeHtml(friendName)}</div>
-            <div style="height:20px; background:var(--bg3); border-radius:4px; overflow:hidden; border:1px solid var(--border);">
-              <div style="width:${friendRate}%; height:100%; background:var(--accent); transition:width 0.3s;"></div>
-            </div>
-            <div style="font-size:0.75rem; color:var(--text2); margin-top:4px;">${friendScore ? friendScore.score : 0}/${friendScore ? friendScore.total : 0} (${friendRate}%)</div>
-          </div>
-        </div>
-      `;
-      area.appendChild(card);
+    friendSnap.forEach(doc => {
+      const d = doc.data();
+      friendName = d.name || 'フレンド';
+      if (!category || d.category === category) {
+        if(friendData[d.date]) { friendData[d.date].score += (d.score||0); friendData[d.date].total += (d.total||0); }
+      }
+    });
+    
+    const myRates = dates.map(d => myData[d].total > 0 ? (myData[d].score / myData[d].total * 100).toFixed(1) : 0);
+    const friendRates = dates.map(d => friendData[d].total > 0 ? (friendData[d].score / friendData[d].total * 100).toFixed(1) : 0);
+    const labels = dates.map(d => d.slice(5).replace('-','/')); // MM/DD形式
+    
+    area.innerHTML = `
+      <div class="card" style="margin-top:15px;">
+        <div style="font-weight:700; text-align:center; margin-bottom:10px; color:var(--text);">${category ? escapeHtml(category) : '🌐 全カテゴリー'} 正解率の推移 (過去7日)</div>
+        <canvas id="compareLineChart"></canvas>
+      </div>
+    `;
+    
+    const ctx = document.getElementById('compareLineChart').getContext('2d');
+    if(compareChartInstance) compareChartInstance.destroy();
+    
+    compareChartInstance = new Chart(ctx, {
+      type: 'line',
+      data: {
+        labels: labels,
+        datasets: [
+          { label: 'あなた', data: myRates, borderColor: '#4f7cff', backgroundColor: 'rgba(79,124,255,0.1)', fill: true, tension: 0.3, pointRadius: 4 },
+          { label: friendName, data: friendRates, borderColor: '#7c3fff', backgroundColor: 'rgba(124,63,255,0.1)', fill: true, tension: 0.3, pointRadius: 4 }
+        ]
+      },
+      options: {
+        responsive: true,
+        scales: { 
+          y: { beginAtZero: true, max: 100, ticks: { callback: function(v){return v+'%'} }, grid:{color:'rgba(138,155,184,0.2)'} }, 
+          x: { grid:{display:false} } 
+        },
+        plugins: { legend: { labels: { color: '#8a9bb8' } } }
+      }
     });
   } catch(e) {
     console.error(e);
-    area.innerHTML = '<div style="color:var(--danger);">成績データの読み込みに失敗しました</div>';
+    area.innerHTML = '<div style="color:var(--danger); text-align:center;">成績データの読み込みに失敗しました</div>';
   }
 }
 
@@ -309,7 +354,6 @@ function initOnlineMatchPage() {
   if (container) {
     container.innerHTML = '';
     
-    // ★【0.02.51-g追加】共有カテゴリーのみを抽出してリスト化
     const sharedCats = [...new Set(db.filter(q => q.sharedDocId).map(q => q.category))];
     
     if (sharedCats.length === 0) {
@@ -432,7 +476,6 @@ async function startOnlineMatch(scope, qCount, timeLimit, isPrivate, quizFormat 
       }
     }
     
-    // 【修正済】scopeは必ず特定のカテゴリー名として渡される
     const subCats = typeof getAllSubcategories === 'function' ? getAllSubcategories(scope) : [scope];
     let pool = db.filter(q => subCats.includes(q.category));
     
@@ -536,7 +579,6 @@ function listenToMatch() {
         const isPlayer1 = data.player1 === currentUser.uid;
         const myFinished = isPlayer1 ? data.player1Finished : data.player2Finished;
         
-        // ★【0.02.51-g追加】相手が既にゴールしている場合は進行度を強制的にMAXにする
         let oppProgress = isPlayer1 ? (data.player2Progress || 0) : (data.player1Progress || 0);
         const oppFinished = isPlayer1 ? data.player2Finished : data.player1Finished;
         if (oppFinished && data.questions) {
@@ -952,7 +994,6 @@ async function finishOnlineGame() {
   try {
     const doc = await firestore.collection('susuru_anki_matches').doc(currentMatchId).get();
     const isPlayer1 = doc.data().player1 === currentUser.uid;
-    // ★【0.02.51-g追加】ゴールした瞬間に、自分のProgressをMAX(問題数)に更新する
     if (isPlayer1) {
       await firestore.collection('susuru_anki_matches').doc(currentMatchId).update({
         player1Score: matchScore, player1Finished: true, player1Progress: matchQuestions.length
@@ -989,6 +1030,7 @@ function updateGameWaitingStatus(data) {
   }
 }
 
+// ★ 追加機能：マッチング履歴を保存
 function showMatchResult(data) {
   const gameView = document.getElementById('onlineGameView');
   if (!gameView) return;
@@ -998,7 +1040,18 @@ function showMatchResult(data) {
   const isPlayer1 = data.player1 === currentUser.uid;
   const myScore = isPlayer1 ? data.player1Score : data.player2Score;
   const oppScore = isPlayer1 ? data.player2Score : data.player1Score;
+  const oppUid = isPlayer1 ? data.player2 : data.player1;
   const oppName = isPlayer1 ? (data.player2Name || "相手") : (data.player1Name || "相手");
+  
+  // 履歴保存処理
+  try {
+    if (oppUid) {
+      let history = JSON.parse(localStorage.getItem('susuru_anki_match_history') || '[]');
+      history.unshift({ oppUid, oppName, myScore, oppScore, date: new Date().toISOString() });
+      history = history.slice(0, 10); // 最新10件を保持
+      localStorage.setItem('susuru_anki_match_history', JSON.stringify(history));
+    }
+  } catch(e) {}
   
   let title = "引き分け 🤔"; let color = "var(--warn)";
   if (myScore > oppScore) { title = "あなたの勝ち！ 🎉"; color = "var(--success)"; }

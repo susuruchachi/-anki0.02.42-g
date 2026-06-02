@@ -10,11 +10,14 @@ function submitBulkAdd() {
   const text = document.getElementById('txtBulkAdd').value.trim();
   if(!text) { closeBulkAdd(); return; }
   
-  // ★ 権限チェック
-  let targetSharedDocId = null;
-  const existingCard = db.find(q => q.category === targetBulkCategory && q.sharedDocId);
-  if (existingCard) {
-    targetSharedDocId = existingCard.sharedDocId;
+  // ★ 変更：親も辿って共有IDを解決
+  let targetSharedDocId = (typeof window.resolveSharedDocId === 'function') ? window.resolveSharedDocId(targetBulkCategory) : null;
+  if (!targetSharedDocId) {
+    const existingCard = db.find(q => q.category === targetBulkCategory && q.sharedDocId);
+    if (existingCard) targetSharedDocId = existingCard.sharedDocId;
+  }
+  
+  if (targetSharedDocId) {
     const perm = sharedDocPermissions[targetSharedDocId];
     if (!perm || !perm.canEdit) { closeBulkAdd(); return alert("🔒 この共有/公開カテゴリーは閲覧専用のため、問題を追加できません。"); }
   }
@@ -26,7 +29,7 @@ function submitBulkAdd() {
       const q = line.substring(0, idx).trim(), a = line.substring(idx + 1).trim();
       if(q && a) {
         const newCard = { id: 'id_' + Math.random().toString(36).slice(2) + Date.now().toString(36), question: q, answer: a, category: targetBulkCategory, level: 0, correct: 0, incorrect: 0, streak: 0, wrongStreak: 0, shikkariStreak: 0 };
-        if (targetSharedDocId) { newCard.sharedDocId = targetSharedDocId; updateCardInSharedDoc(targetSharedDocId, newCard, 'add'); }
+        if (targetSharedDocId) { newCard.sharedDocId = targetSharedDocId; if(typeof updateCardInSharedDoc === 'function') updateCardInSharedDoc(targetSharedDocId, newCard, 'add'); }
         db.push(newCard);
         count++;
       }
