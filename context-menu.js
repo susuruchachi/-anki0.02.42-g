@@ -66,19 +66,13 @@ function handleCategoryLongpress(catName) {
   if (catName === "未分類") return alert("基本フォルダーは変更できません。");
   
   let isSharedReadOnly = false;
-  let isSubscribedOther = false;
-  
-  // ★ 変更：親も辿って共有IDを解決
-  let targetSharedDocId = (typeof window.resolveSharedDocId === 'function') ? window.resolveSharedDocId(catName) : null;
-  if (!targetSharedDocId) {
-    const sharedCard = db.find(q => q.category === catName && q.sharedDocId);
-    if (sharedCard) targetSharedDocId = sharedCard.sharedDocId;
-  }
-
-  if (targetSharedDocId) {
-    const docId = targetSharedDocId;
+  let isSubscribedOther = false; // 他人が作った購読カテゴリー
+  const sharedCard = db.find(q => q.category === catName && q.sharedDocId);
+  if (sharedCard) {
+    const docId = sharedCard.sharedDocId;
     const perm = sharedDocPermissions[docId];
     if (!perm || !perm.canEdit) isSharedReadOnly = true;
+    // ownedDocs（確実なローカル記録）を最優先で参照し、なければpermのisOwnerで判断
     const isDocOwner = ownedDocs.includes(docId) || (perm && perm.isOwner);
     if (!isDocOwner && subscribedDocs.includes(docId)) isSubscribedOther = true;
   }
@@ -101,7 +95,7 @@ function handleCategoryLongpress(catName) {
     { type: 'separator' },
     { html: '➕ 中にサブフォルダーを作る', action: () => {
         if (isSharedReadOnly) return alert("🔒 閲覧専用の共有カテゴリー内にフォルダーは作成できません。");
-        const n = prompt(`「${catName}」の中に作成するフォルダー名:\n(親が共有/公開中ならこれも自動で同期されます)`);
+        const n = prompt(`「${catName}」の中に作成するフォルダー名:`);
         if(!n || n.trim() === "") return; if(categories.includes(n.trim())) return alert("既に存在します。");
         categories.push(n.trim()); if(!categoryTree[catName]) categoryTree[catName] = [];
         categoryTree[catName].push(n.trim()); 
@@ -117,14 +111,7 @@ function handleCategoryLongpress(catName) {
         categories = categories.map(c => c === catName ? n.trim() : c);
         for(let p in categoryTree) { categoryTree[p] = categoryTree[p].map(c => c === catName ? n.trim() : c); }
         if(categoryTree[catName]) { categoryTree[n.trim()] = categoryTree[catName]; delete categoryTree[catName]; }
-        
-        // ★ 変更：リネーム時にクラウド側のデータも更新
-        db.forEach(q => { 
-          if(q.category === catName) {
-            q.category = n.trim(); 
-            if (q.sharedDocId && typeof updateCardInSharedDoc === 'function') updateCardInSharedDoc(q.sharedDocId, q, 'edit');
-          }
-        });
+        db.forEach(q => { if(q.category === catName) q.category = n.trim(); });
         deletedCats = deletedCats.filter(c => c !== n.trim());
         saveData(true); renderTree();
       } },
@@ -152,15 +139,7 @@ function handleCategoryLongpress(catName) {
           if(!confirm(`警告: 「${catName}」と中身を全て削除しますか？`)) return;
           const toDelete = getAllSubcategories(catName);
           deletedCats.push(...toDelete);
-          
-          // ★ 変更：フォルダー削除時にクラウド側のデータも削除
-          db.forEach(q => { 
-            if(toDelete.includes(q.category)) {
-              deletedCards.push(q.id);
-              if (q.sharedDocId && typeof updateCardInSharedDoc === 'function') updateCardInSharedDoc(q.sharedDocId, q, 'delete');
-            }
-          });
-          
+          db.forEach(q => { if(toDelete.includes(q.category)) deletedCards.push(q.id); });
           db = db.filter(q => !toDelete.includes(q.category)); categories = categories.filter(c => !toDelete.includes(c));
           for(let p in categoryTree) { if(toDelete.includes(p)) delete categoryTree[p]; else if(categoryTree[p]) categoryTree[p] = categoryTree[p].filter(c => !toDelete.includes(c)); }
           saveData(true); renderTree();
