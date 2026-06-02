@@ -1,30 +1,12 @@
 // ----------------- 問題箱機能 -----------------
 let _boxAnswerCache = {};
-
-// ★ 追加機能：入れ子のサブフォルダーでも親が共有なら共有IDを引き継ぐための解決関数
-window.resolveSharedDocId = function(catName) {
-  if (!catName || catName === "未分類") return null;
-  // 直接共有されているか確認
-  let card = db.find(q => q.category === catName && q.sharedDocId);
-  if (card) return card.sharedDocId;
-  // 親フォルダーが共有されているか確認
-  if (typeof categoryTree !== 'undefined') {
-    for (let p in categoryTree) {
-      if (p !== catName && typeof getAllSubcategories === 'function' && getAllSubcategories(p).includes(catName)) {
-         let pCard = db.find(q => q.category === p && q.sharedDocId);
-         if (pCard) return pCard.sharedDocId;
-      }
-    }
-  }
-  return null;
-};
-
 function showAllCards() { currentViewContext = 'all'; const sb = document.getElementById('txtSearchBox'); if(sb) sb.value = ''; renderBox(); }
 function filterBoxByStatus(statusType) { currentViewContext = statusType; openPage('pgBox'); }
 
 function renderBox() {
   const container = document.getElementById('boxList'); container.innerHTML = '';
   let filtered = [...db]; let titleString = "📝 全ての問題一覧";
+  // 卒業判定：レベル5 かつ level5Correct が5以上
 
   let navContainer = null;
   const specialViews = ['all', 'grad', 'master', 'normal', 'weak', 'shikkari', 'unseen'];
@@ -150,7 +132,7 @@ function handleQuestionLongpress(item) {
   sortedCategories.forEach(cat => {
     if (cat !== item.category) { moveOptions.push({ html: `📂 フォルダー「${cat}」へ移動`, action: async () => { 
       item.category = cat; 
-      if (item.sharedDocId && typeof updateCardInSharedDoc === 'function') await updateCardInSharedDoc(item.sharedDocId, item, 'edit');
+      if (item.sharedDocId) await updateCardInSharedDoc(item.sharedDocId, item, 'edit');
       saveData(true); renderBox(); 
     } }); }
   });
@@ -160,7 +142,7 @@ function handleQuestionLongpress(item) {
         const newQ = prompt("問題文を編集:", item.question); if(newQ === null) return;
         const newA = prompt("答えを編集:", item.answer); if(newA === null) return;
         item.question = newQ.trim() || item.question; item.answer = newA.trim() || item.answer;
-        if (item.sharedDocId && typeof updateCardInSharedDoc === 'function') await updateCardInSharedDoc(item.sharedDocId, item, 'edit');
+        if (item.sharedDocId) await updateCardInSharedDoc(item.sharedDocId, item, 'edit');
         autoMerge(); renderBox();
       } },
     { type: 'separator' }, ...moveOptions, { type: 'separator' },
@@ -168,7 +150,7 @@ function handleQuestionLongpress(item) {
         if(!confirm("完全に消去しますか？")) return; 
         deletedCards.push(item.id);
         db = db.filter(q => q.id !== item.id); 
-        if (item.sharedDocId && typeof updateCardInSharedDoc === 'function') await updateCardInSharedDoc(item.sharedDocId, item, 'delete');
+        if (item.sharedDocId) await updateCardInSharedDoc(item.sharedDocId, item, 'delete');
         saveData(true); renderBox(); 
       } }
   ]);
@@ -180,14 +162,10 @@ function showAddQModal() {
     defaultCat = currentViewContext.value;
   }
   
-  // ★ 変更：親も辿って共有IDを解決
-  let targetSharedDocId = (typeof window.resolveSharedDocId === 'function') ? window.resolveSharedDocId(defaultCat) : null;
-  if (!targetSharedDocId) {
-    const existingCard = db.find(q => q.category === defaultCat && q.sharedDocId);
-    if (existingCard) targetSharedDocId = existingCard.sharedDocId;
-  }
-
-  if (targetSharedDocId) {
+  let targetSharedDocId = null;
+  const existingCard = db.find(q => q.category === defaultCat && q.sharedDocId);
+  if (existingCard) {
+    targetSharedDocId = existingCard.sharedDocId;
     const perm = sharedDocPermissions[targetSharedDocId];
     if (!perm || !perm.canEdit) return alert("🔒 【閲覧専用】\nこの共有カテゴリーは閲覧専用のため、新しい問題を追加できません。");
   }
@@ -199,6 +177,6 @@ function showAddQModal() {
   if (targetSharedDocId) newCard.sharedDocId = targetSharedDocId;
   db.push(newCard);
   
-  if (targetSharedDocId && typeof updateCardInSharedDoc === 'function') updateCardInSharedDoc(targetSharedDocId, newCard, 'add');
+  if (targetSharedDocId) updateCardInSharedDoc(targetSharedDocId, newCard, 'add');
   autoMerge(); renderBox();
 }
