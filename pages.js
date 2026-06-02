@@ -62,6 +62,11 @@ function executePageTransition(pageId, isBackAction) {
     pageHistory.push(currentId);
     history.pushState({ page: pageId }, '', '');
   }
+  // ★【0.02.58-g】最終ページを保存（再読み込み後に復元するため）。クイズ中・対戦中は保存しない
+  const dontSave = ['pgQuizPlayer', 'pgOnlineMatch', 'pgShared'];
+  if (!dontSave.includes(pageId)) {
+    try { localStorage.setItem('susuru_anki_last_page', pageId); } catch(e) {}
+  }
   if (pageId !== 'pgFriends') closeChat();
 
   document.querySelectorAll('.screen').forEach(s => { s.classList.remove('active'); s.style.display='none'; });
