@@ -1045,7 +1045,7 @@ function updateGameWaitingStatus(data) {
   }
 }
 
-function showMatchResult(data) {
+async function showMatchResult(data) {
   const gameView = document.getElementById('onlineGameView');
   if (!gameView) return;
   const ind = document.getElementById('onlineOppFinishedIndicator');
