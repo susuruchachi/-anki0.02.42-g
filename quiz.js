@@ -1,4 +1,61 @@
 // ----------------- クイズ機能 -----------------
+
+// ----------------- ネイティブ発音対応 TTSエンジン -----------------
+function isEnglishText(text) {
+  if (!text) return false;
+  const cleanText = text.trim();
+  // 英語のアルファベットや一般的な記号だけで構成されているか（日本語が含まれていないか）
+  return /^[A-Za-z0-9\s,.:;?!"'\-()]+$/.test(cleanText);
+}
+
+function getBestVoice(langPrefix) {
+  if (!('speechSynthesis' in window)) return null;
+  const voices = window.speechSynthesis.getVoices();
+  let bestVoice = voices.find(v => 
+    v.lang.toLowerCase().startsWith(langPrefix) && 
+    (v.name.includes('Google') || v.name.includes('Premium') || v.name.includes('Natural'))
+  );
+  if (!bestVoice) {
+    bestVoice = voices.find(v => v.lang.toLowerCase().startsWith(langPrefix));
+  }
+  return bestVoice;
+}
+
+function speakText(text, options = {}) {
+  if (!('speechSynthesis' in window) || localStorage.getItem('muteTTS') === 'true') return;
+  window.speechSynthesis.cancel();
+  if (!text || text.trim() === "") return;
+
+  const div = document.createElement('div');
+  div.innerHTML = text;
+  const plainText = div.textContent || div.innerText || "";
+
+  const utterance = new SpeechSynthesisUtterance(plainText);
+  utterance.rate = options.rate || 1.0;
+  utterance.pitch = options.pitch || 1.0;
+  utterance.volume = options.volume || 1.0;
+
+  if (isEnglishText(plainText)) {
+    const enVoice = getBestVoice('en');
+    if (enVoice) { utterance.voice = enVoice; utterance.lang = enVoice.lang; }
+    else { utterance.lang = 'en-US'; }
+  } else {
+    const jaVoice = getBestVoice('ja');
+    if (jaVoice) { utterance.voice = jaVoice; utterance.lang = jaVoice.lang; }
+    else { utterance.lang = 'ja-JP'; }
+  }
+  
+  utterance.onerror = (e) => console.error("TTSエラー:", e);
+  window.speechSynthesis.speak(utterance);
+}
+
+if ('speechSynthesis' in window) {
+  window.speechSynthesis.onvoiceschanged = () => {
+    getBestVoice('en'); getBestVoice('ja');
+  };
+}
+// -----------------------------------------------------------
+
 const SCOPE_STORAGE_KEY = 'susuru_anki_scope_path';
 function saveScopePath() {
   try { localStorage.setItem(SCOPE_STORAGE_KEY, JSON.stringify(selectedScopePath)); } catch(e) {}
@@ -43,6 +100,9 @@ function createScopeSelect(depth, categoriesToShow) {
   document.getElementById('scopeSelectors').appendChild(select);
 }
 
+// ★【0.02.63】このラウンドの構造化解答（品詞タグ付き複数解答）。null なら通常の単一解答。
+let currentStructuredAnswer = null;
+
 function normalizeAnswer(str) {
   if(!str) return '';
   let s = String(str).replace(/[Ａ-Ｚａ-ｚ０-９]/g, c=>String.fromCharCode(c.charCodeAt(0)-0xFEE0)).toLowerCase().trim();
@@ -54,6 +114,25 @@ function isAnswerCorrect(input, correctAnswer) {
   const norms = correctAnswer.split(/[/|]/).map(a => normalizeAnswer(a));
   const inNorm = normalizeAnswer(input);
   return norms.includes(inNorm);
+}
+
+// ★【0.02.65】4択・みんはや・文字タップは「1つの答えを選ぶ/組み立てる」形式のため、
+// 品詞タグ付き構造化解答(例: adapt の他動詞/自動詞)を持つカードは、
+// タグ(意味)ごとに独立した単発の問題として連続で出題する。
+// 生成される仮想エントリーは quizPool 内のみに存在し、db には反映されない。
+function expandStructuredForChoiceModes(cards) {
+  const result = [];
+  cards.forEach(card => {
+    const structured = parseStructuredAnswer(card.answer);
+    if (structured) {
+      structured.forEach(seg => {
+        result.push({ ...card, answer: seg.text, _sourceId: card.id, _senseLabel: seg.label });
+      });
+    } else {
+      result.push(card);
+    }
+  });
+  return result;
 }
 
 async function startQuiz(modeType = 'normal') {
@@ -82,7 +161,13 @@ async function startQuiz(modeType = 'normal') {
           if(subset.length === 0) { alert("⚠️ 問題が見つかりません。"); return; }
           for (let i = subset.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [subset[i], subset[j]] = [subset[j], subset[i]]; }
           quizPool = subset.slice(0, limitCount);
-          if (document.getElementById('chkSwapQA').checked) quizPool = quizPool.map(q => ({ ...q, question: q.answer, answer: q.question }));
+          if (document.getElementById('chkSwapQA').checked) quizPool = quizPool.map(q => ({ ...q, question: q.answer, answer: q.question, questionImage: q.answerImage, answerImage: q.questionImage }));
+          // ★【0.02.65】選択式モードは品詞タグごとに独立した問題として連続出題する
+          if (['choice', 'minhaya', 'tap'].includes(document.getElementById('selQuizMode').value)) {
+            quizPool = expandStructuredForChoiceModes(quizPool);
+          }
+          // ★【0.02.63】オンライン対戦は画像を含めずに同期する（Firestoreの1ドキュメント容量上限を超えて対戦が壊れるのを防ぐため）
+          quizPool = quizPool.map(q => { const { questionImage, answerImage, ...rest } = q; return rest; });
           
           await firestore.collection('susuru_anki_match_rooms').doc(window.currentOnlineMatch.roomId).update({
               quizPool: quizPool
@@ -116,20 +201,56 @@ async function startQuiz(modeType = 'normal') {
   subset.sort((a, b) => prioritize(a) - prioritize(b));
   quizPool = subset.slice(0, limitCount); quizIndex = 0;
 
-  if (document.getElementById('chkSwapQA').checked) quizPool = quizPool.map(q => ({ ...q, question: q.answer, answer: q.question }));
+  if (document.getElementById('chkSwapQA').checked) quizPool = quizPool.map(q => ({ ...q, question: q.answer, answer: q.question, questionImage: q.answerImage, answerImage: q.questionImage }));
+  // ★【0.02.65】選択式モードは品詞タグごとに独立した問題として連続出題する
+  if (['choice', 'minhaya', 'tap'].includes(document.getElementById('selQuizMode').value)) {
+    quizPool = expandStructuredForChoiceModes(quizPool);
+  }
   openPage('pgQuizPlayer'); loadQuizQuestion();
 }
 
 function loadQuizQuestion() {
   quizPhase='q'; selectedChoiceIdx=null; window.currentSelfJudge=null;
   const cur = quizPool[quizIndex];
+
+  // ★【0.02.63】品詞タグ付き構造化解答の判定（このラウンドで使い回すのでキャッシュしておく）
+  // ・cur.answer が構造化解答 → 出題文からは (タグ) を省略して表示し、解答欄はタグごとの入力欄にする
+  // ・cur.question 自体が構造化解答の形（逆引きモードでQ/Aが入れ替わった場合など）→ 出題文をラベル付きで整形表示する
+  const aStructured = parseStructuredAnswer(cur.answer);
+  const qStructuredSelf = parseStructuredAnswer(cur.question);
+  currentStructuredAnswer = aStructured;
+
   document.getElementById('lblQuizProgress').innerText = `Q ${quizIndex+1}/${quizPool.length}`;
-  document.getElementById('lblQuizQuestion').innerText = cur.question;
+  const qEl = document.getElementById('lblQuizQuestion');
+    let qDisplay = cur.question, qSpeech = cur.question;
+    if (qStructuredSelf) { qDisplay = formatStructuredAnswerHTML(qStructuredSelf); qSpeech = qStructuredSelf.map(s => s.text).join('。'); }
+    else if (aStructured) { qDisplay = stripParens(cur.question); qSpeech = qDisplay; }
+    qEl.innerHTML = qDisplay;
+    if (cur._senseLabel) {
+      const senseDiv = document.createElement('div');
+      senseDiv.style.cssText = 'font-size:0.8rem; color:var(--primary); font-weight:700; margin-top:8px;';
+      senseDiv.innerText = `🏷️ ${cur._senseLabel}`;
+      qEl.appendChild(senseDiv);
+    }
+    if (cur.questionImage) {
+      const qImg = document.createElement('img');
+      qImg.src = cur.questionImage; qImg.alt = '問題画像';
+      qImg.style.cssText = 'max-width:100%; height:auto; border-radius:8px; margin-top:12px; display:block;';
+      qEl.appendChild(qImg);
+    }
+    if (typeof renderMathInElement === 'function') {
+      renderMathInElement(qEl, {
+        delimiters: [
+          {left: '$$', right: '$$', display: true},
+          {left: '$', right: '$', display: false}
+        ]
+      });
+    }
   document.getElementById('quizFeedback').style.display = 'none';
   document.getElementById('txtQuickNote').value = cur.note || '';
 
   if(document.getElementById('chkTTS').checked) {
-    window.speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(cur.question); u.lang='ja-JP'; window.speechSynthesis.speak(u);
+    speakText(qSpeech);
   }
 
   const mode = document.getElementById('selQuizMode').value;
@@ -141,7 +262,7 @@ function loadQuizQuestion() {
   else if(mode==='minhaya') { document.getElementById('boxMinhayaArea').style.display='block'; buildMinhayaMode(cur); document.getElementById('btnQuizAction').style.display='none'; }
   else if(mode==='tap') { document.getElementById('boxTapArea').style.display='block'; buildTapChoices(cur); document.getElementById('btnQuizAction').style.display='none'; }
   else if(mode==='self') { document.getElementById('boxSelfArea').style.display='block'; buildSelfMode(cur); document.getElementById('btnQuizAction').style.display='none'; document.getElementById('btnQuizPass').style.display='none'; }
-  else { document.getElementById('boxDescArea').style.display='block'; document.getElementById('txtDescAnswer').value=''; document.getElementById('txtDescAnswer').disabled=false; document.getElementById('txtDescAnswer').focus(); }
+  else { setupDescAnswerArea(aStructured); }
 
   let base = 15;
   if (window.currentOnlineMatch && window.currentOnlineMatch.timeLimit) {
@@ -155,6 +276,10 @@ function loadQuizQuestion() {
     if(document.getElementById('chkTimeAttack').checked) base *= 0.5;
   }
 
+  // ★【0.02.65】記述式モードで構造化解答の場合、欄の数だけ制限時間を倍にする（実際のカウントダウンにも反映されるようbaseそのものを変更する）
+  if (mode === 'desc' && aStructured) {
+    base *= aStructured.length;
+  }
   quizTimeLimit = base; quizTimeLeft = base;
   stopQuizTimer(); updateTimerUI();
   
@@ -171,10 +296,19 @@ function loadQuizQuestion() {
       return;
     }
     if (speed !== 'expert' && !hintShown && quizTimeLeft < (quizTimeLimit * (speed === 'easy' ? 0.7 : 0.4))) {
-      hintShown = true; const hb = document.getElementById('lblQuizHint');
-      const ans1 = cur.answer.split(/[/|]/)[0].trim();
-      hb.innerText = `ヒント: 先頭は「 ${ans1.charAt(0)} 」 ${ans1.length>3?`(全 ${ans1.length} 文字)`:''}`;
-      hb.style.display = 'inline-block';
+      hintShown = true;
+      // ★【0.02.65】記述式モードで解答欄が複数に分かれている場合、欄ごとに1文字目のヒントを出す
+      if (mode === 'desc' && aStructured) {
+        aStructured.forEach((seg, i) => {
+          const hb = document.getElementById('structHint_' + i);
+          if (hb) { hb.innerHTML = `先頭:「${escapeHtml(seg.text.charAt(0))}」`; hb.style.display = 'inline'; }
+        });
+      } else {
+        const hb = document.getElementById('lblQuizHint');
+        const ans1 = getPrimaryAnswer(cur.answer);
+        hb.innerText = `ヒント: 先頭は「 ${ans1.charAt(0)} 」 ${ans1.length>3?`(全 ${ans1.length} 文字)`:''}`;
+        hb.style.display = 'inline-block';
+      }
     }
   }, 100);
 }
@@ -192,17 +326,68 @@ function stopQuizTimer() {
   if (quizTimer) { clearInterval(quizTimer); quizTimer = null; }
 }
 
-function getPrimaryAnswer(ans) { return ans.split(/[/|]/)[0].trim(); }
+function getPrimaryAnswer(ans) {
+  const first = ans.split(/[/|]/)[0].trim();
+  // ★【0.02.63】先頭が (タグ) から始まる場合はタグを除いた本文側を代表解答として使う
+  // （4択・みんはや・文字タップ・自己申告モードや、ヒント表示等で使われる）
+  const m = first.match(/^(?:\([^()]*\)\s*)+([\s\S]*)$/);
+  return m && m[1].trim() ? m[1].trim() : first;
+}
+
+// ★【0.02.63】記述式入力モードの解答欄を構築する。
+// structured が非nullなら「タグごとの入力欄」を、nullなら従来通りの単一入力欄を表示する。
+function setupDescAnswerArea(structured) {
+  document.getElementById('boxDescArea').style.display = 'block';
+  const txt = document.getElementById('txtDescAnswer');
+  const structWrap = document.getElementById('boxDescStructuredArea');
+  if (structured && structured.length > 0) {
+    txt.style.display = 'none';
+    txt.value = '';
+    structWrap.style.display = 'block';
+    structWrap.innerHTML = '';
+    structured.forEach((seg, i) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'margin-bottom:12px; text-align:left;';
+      const labelRow = document.createElement('div');
+      labelRow.style.cssText = 'display:flex; justify-content:space-between; align-items:baseline; margin-bottom:5px;';
+      const label = document.createElement('div');
+      label.style.cssText = 'font-size:0.78rem; color:var(--text2); font-weight:700;';
+      label.innerHTML = `🏷️ ${seg.label || ('解答 ' + (i + 1))}`;
+      const hintSpan = document.createElement('span');
+      hintSpan.id = 'structHint_' + i;
+      hintSpan.style.cssText = 'font-size:0.72rem; color:var(--warn); font-weight:700; display:none;';
+      labelRow.appendChild(label); labelRow.appendChild(hintSpan);
+      const input = document.createElement('input');
+      input.type = 'text'; input.className = 'form-control'; input.id = 'structAns_' + i;
+      input.autocomplete = 'off'; input.placeholder = '答えを入力...';
+      input.onkeydown = (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const next = document.getElementById('structAns_' + (i + 1));
+        if (next) next.focus(); else submitQuizAction();
+      };
+      row.appendChild(labelRow); row.appendChild(input);
+      structWrap.appendChild(row);
+    });
+    const first = document.getElementById('structAns_0');
+    if (first) first.focus();
+  } else {
+    txt.style.display = 'block';
+    structWrap.style.display = 'none'; structWrap.innerHTML = '';
+    txt.value = ''; txt.disabled = false; txt.focus();
+  }
+}
 
 function buildFourChoices(cur) {
   const area = document.getElementById('boxChoiceArea'); area.innerHTML = '';
   const correctPrimary = getPrimaryAnswer(cur.answer);
   
   let altCandidates = [];
-  const catAnswers = db.filter(q => q.category === cur.category && getPrimaryAnswer(q.answer) !== correctPrimary).map(q => getPrimaryAnswer(q.answer));
+  // ★【0.02.65】センス分割された仮想エントリーの場合、元カード(_sourceId)自身は候補から除外する
+  const catAnswers = db.filter(q => q.category === cur.category && q.id !== cur._sourceId && getPrimaryAnswer(q.answer) !== correctPrimary).map(q => getPrimaryAnswer(q.answer));
   altCandidates = [...new Set(catAnswers)];
   if(altCandidates.length < 3) {
-    const globalAnswers = db.filter(q => getPrimaryAnswer(q.answer) !== correctPrimary).map(q => getPrimaryAnswer(q.answer));
+    const globalAnswers = db.filter(q => q.id !== cur._sourceId && getPrimaryAnswer(q.answer) !== correctPrimary).map(q => getPrimaryAnswer(q.answer));
     altCandidates = [...new Set([...altCandidates, ...globalAnswers])];
   }
   altCandidates.sort(() => Math.random() - 0.5);
@@ -332,7 +517,20 @@ function renderTapInput() {
 function buildSelfMode(cur) { document.getElementById('btnShowAnswer').style.display = 'inline-flex'; document.getElementById('selfJudgeArea').style.display = 'none'; }
 function showSelfAnswer() {
   stopQuizTimer(); document.getElementById('btnShowAnswer').style.display = 'none';
-  document.getElementById('selfAnswerDisplay').innerText = `A: ${getPrimaryAnswer(quizPool[quizIndex].answer)}`;
+  const saEl = document.getElementById('selfAnswerDisplay');
+    const _cur = quizPool[quizIndex];
+    if (currentStructuredAnswer) { saEl.innerHTML = `<div style="margin-bottom:4px;">A:</div>` + formatStructuredAnswerHTML(currentStructuredAnswer); }
+    else { saEl.innerHTML = `A: ${getPrimaryAnswer(_cur.answer)}`; }
+    if (_cur.answerImage) {
+      const aImg = document.createElement('img');
+      aImg.src = _cur.answerImage; aImg.alt = '解答画像';
+      aImg.style.cssText = 'max-width:100%; height:auto; border-radius:8px; margin-top:10px; display:block;';
+      saEl.appendChild(aImg);
+    }
+    if (typeof renderMathInElement === 'function') {
+      renderMathInElement(saEl, { delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}] });
+    }
+    speakText(getPrimaryAnswer(_cur.answer));
   document.getElementById('selfJudgeArea').style.display = 'block';
 }
 function submitSelfMode(judge) {
@@ -378,8 +576,25 @@ function submitQuizAction() {
   const cur = quizPool[quizIndex]; let isCorrect = false;
   const mode = document.getElementById('selQuizMode').value;
   if (mode === 'choice') { if(!selectedChoiceIdx) return; isCorrect = isAnswerCorrect(selectedChoiceIdx, cur.answer); } 
+  else if (currentStructuredAnswer) { isCorrect = gradeStructuredAnswer(currentStructuredAnswer); }
   else { isCorrect = isAnswerCorrect(document.getElementById('txtDescAnswer').value, cur.answer); }
   evaluateRoundAnswer(isCorrect, isCorrect ? "🎉 正解！" : "❌ 不正解");
+}
+
+// ★【0.02.63】タグごとの入力欄を採点する。全欄正解の場合のみ true。
+// 各欄は結果に応じて枠線の色を変え、以後編集できないようロックする。
+function gradeStructuredAnswer(structured) {
+  let allCorrect = true;
+  structured.forEach((seg, i) => {
+    const input = document.getElementById('structAns_' + i);
+    if (!input) { allCorrect = false; return; }
+    const ok = isStructuredSegmentCorrect(input.value, seg.text);
+    if (!ok) allCorrect = false;
+    input.disabled = true;
+    input.style.borderColor = ok ? 'var(--success)' : 'var(--danger)';
+    input.style.background = ok ? 'rgba(34,199,122,0.1)' : 'rgba(255,79,106,0.1)';
+  });
+  return allCorrect;
 }
 
 function evaluateRoundAnswer(isCorrect, head) {
@@ -451,7 +666,23 @@ function evaluateRoundAnswer(isCorrect, head) {
   
   const fb = document.getElementById('quizFeedback');
   document.getElementById('feedbackResultText').innerText = head;
-  document.getElementById('feedbackAnswerText').innerText = `正解: ${getPrimaryAnswer(cur.answer)}`;
+  const fbAnsEl = document.getElementById('feedbackAnswerText');
+  if (currentStructuredAnswer) {
+    fbAnsEl.innerHTML = `<div style="font-weight:700; margin-bottom:6px;">正解:</div>` + formatStructuredAnswerHTML(currentStructuredAnswer);
+  } else {
+    const senseLabelPrefix = cur._senseLabel ? `<span style="color:var(--primary); font-weight:700;">[${cur._senseLabel}]</span> ` : '';
+    fbAnsEl.innerHTML = `正解: ${senseLabelPrefix}${getPrimaryAnswer(cur.answer)}`;
+  }
+  if (cur.answerImage) {
+    const aImg = document.createElement('img');
+    aImg.src = cur.answerImage; aImg.alt = '解答画像';
+    aImg.style.cssText = 'max-width:100%; height:auto; border-radius:8px; margin-top:10px; display:block;';
+    fbAnsEl.appendChild(aImg);
+  }
+  if (typeof renderMathInElement === 'function') {
+    renderMathInElement(fbAnsEl, { delimiters: [{left: '$$', right: '$$', display: true}, {left: '$', right: '$', display: false}] });
+  }
+  speakText(getPrimaryAnswer(cur.answer));
   fb.className = `feedback-area ${isCorrect ? 'correct':'incorrect'}`; fb.style.display = 'flex';
   
   document.getElementById('btnQuizPass').style.display = 'none';
@@ -463,9 +694,11 @@ function evaluateRoundAnswer(isCorrect, head) {
   const mode = document.getElementById('selQuizMode').value;
   if (['choice', 'tap', 'self', 'minhaya', 'desc'].includes(mode)) {
     clearTimeout(autoNextTimeout);
+    // ★【0.02.63】構造化解答は読む量が多いので、センス数に応じて自動送りまでの時間を延長する
+    const advanceDelay = currentStructuredAnswer ? Math.min(15000, 3000 + currentStructuredAnswer.length * 2000) : 3000;
     autoNextTimeout = setTimeout(() => {
       if (quizPhase === 'a') submitQuizAction();
-    }, 3000);
+    }, advanceDelay);
   }
 }
 
